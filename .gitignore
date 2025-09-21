@@ -1,0 +1,32 @@
+# ==== Environment & local configs ====
+.env
+.env.*
+.venv/
+venv/
+out/
+__pycache__/
+*.pyc
+*.pyo
+
+# ==== Logs ====
+*.log
+
+# ==== OS generated ====
+.DS_Store
+Thumbs.db
+
+# ==== Editor folders ====
+.vscode/
+.idea/
+
+# ==== Docker ====
+*.pid
+*.seed
+*.pid.lock
+
+# ==== Node / frontend (if ever used) ====
+node_modules/
+dist/
+
+# ==== Other build artefacts ====
+*.egg-info/
