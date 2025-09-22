@@ -16,6 +16,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 # Ensure output dir exists
+rm -Rf out
 mkdir -p out
 
 # Start the app (reads .env)

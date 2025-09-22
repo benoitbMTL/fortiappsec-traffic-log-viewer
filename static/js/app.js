@@ -13,7 +13,7 @@
 const COLVIS_KEY = "forti_col_visibility_v1";
 
 const DEFAULT_ORDER = [
-    "_blob_last_modified",
+    "log_timestamp",
     "http_host",
     "http_url",
     "http_method",
@@ -27,7 +27,7 @@ const DEFAULT_ORDER = [
 ];
 
 const DEFAULT_VISIBLE = new Set([
-    "_blob_last_modified",
+    "log_timestamp",
     "http_host",
     "http_url",
     "http_method",
@@ -39,6 +39,22 @@ const DEFAULT_VISIBLE = new Set([
     "http_refer",
     "http_retcode",
 ]);
+
+// --- Robust loader: wait for Tabulator to be available ---
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function waitForTabulator(maxMs = 5000) {
+    const started = Date.now();
+    // Fail fast if script tag already reported an error
+    if (window.__TABULATOR_FAILED__ === true) return false;
+
+    while (typeof window.Tabulator === "undefined") {
+        if (window.__TABULATOR_FAILED__ === true) return false;
+        if (Date.now() - started > maxMs) return false;
+        await sleep(100);
+    }
+    return true;
+}
 
 function loadColPrefs() {
     try { return JSON.parse(localStorage.getItem(COLVIS_KEY) || "{}"); }
@@ -127,78 +143,211 @@ function colTitleWithClose(cell, formatterParams, onRendered) {
     return el;
 }
 
-
+// --- REPLACE the two makeColumns() with this single version ---
 
 function makeColumns(keys, colPrefs) {
-    return keys.map(k => ({
-        title: k,
-        field: k,
-        headerFilter: "input",
-        resizable: true,
-        visible: colPrefs[k] !== false,
-        widthGrow: 1,
+    return keys.map(k => {
+        const col = {
+            title: k,
+            field: k,
+            headerFilter: "input",
+            resizable: true,
+            visible: colPrefs[k] !== false,
+            widthGrow: 1,
+            // keep the small “×” in header to hide a column
+            titleFormatter: colTitleWithClose,
+        };
 
-        // NEW: show an “×” to hide the column
-        titleFormatter: colTitleWithClose,
-    }));
+        // Render Unix epoch (sec or ms) as Eastern Time
+        if (k === "log_timestamp") {
+            col.title = "log_timestamp (ET)";
+            col.formatter = epochToEt;
+            col.headerTooltip = "Original field is epoch seconds; rendered as Eastern Time";
+        }
+        return col;
+    });
 }
-
 
 
 function applyDefaultView(table, allKeys) {
     console.debug("[DefaultView] applying");
+    // 1) Persist visibility prefs = only DEFAULT_VISIBLE shown
     const prefs = {};
-    allKeys.forEach(k => prefs[k] = DEFAULT_VISIBLE.has(k));
+    allKeys.forEach(k => { prefs[k] = DEFAULT_VISIBLE.has(k); });
     saveColPrefs(prefs);
-    const ordered = orderColumns(allKeys);
-    table.setColumns(makeColumns(ordered, prefs));
-    table.setOptions({ layout: "fitColumns" });  // keep no H-scroll
-    table.redraw(true);
-}
 
-
-
-
-function applyResetColumns(table, allKeys) {
-    console.debug("[ResetColumns] applying");
-    clearColPrefs();
-    const prefs = {};
+    // 2) Order columns (put your priority ones first) and rebuild
     const ordered = orderColumns(allKeys);
     table.setColumns(makeColumns(ordered, prefs));
 
-    table.setOptions({ layout: "fitData" });     // allow natural width -> H-scroll appears
-    table.redraw(true);
-}
-
-
-
-// === helper: choose layout based on visible columns
-function setLayoutForVisibleColumns(table) {
+    // 3) Default view should be compact (no H-scroll)
     try {
-        const visibleCols = table.getColumns().filter(c => c.isVisible());
-        // heuristic: if more columns than your default set, allow overflow (H-scroll)
-        const needOverflow = visibleCols.length > DEFAULT_VISIBLE.size;
-        table.setOptions({ layout: needOverflow ? "fitData" : "fitColumns" });
+        // Prefer the safe layout switcher if present
+        if (typeof setLayout === "function") setLayout(table, "fitColumns");
+        else if (typeof table.updateOption === "function") table.updateOption("layout", "fitColumns");
+        else if (typeof table.setOptions === "function") table.setOptions({ layout: "fitColumns" });
+
+        // Ensure the “force-hscroll” class is off
+        if (typeof toggleHScroll === "function") toggleHScroll(false);
+
+        // Keep newest first (if your data has that column)
+        if (table.getColumn("_blob_last_modified")) {
+            table.setSort([{ column: "_blob_last_modified", dir: "desc" }]);
+        }
+
         table.redraw(true);
-        console.debug("[Layout]", needOverflow ? "fitData (H-scroll enabled)" : "fitColumns (no H-scroll)", "visible:", visibleCols.length);
+        if (typeof debugWidths === "function") setTimeout(() => debugWidths("DefaultView", table), 0);
     } catch (e) {
-        console.warn("[Layout] cannot compute visible columns:", e);
+        console.warn("[DefaultView] post-setup failed:", e);
     }
 }
 
 
-function makeColumns(keys, colPrefs) {
-    return keys.map(k => ({
-        title: k,
-        field: k,
-        headerFilter: "input",
-        resizable: true,
-        visible: colPrefs[k] !== false,
-        minWidth: 130,                // NEW: avoids micro-shrinking; helps trigger H-scroll
-        widthGrow: 1,
-        titleFormatter: colTitleWithClose,
-    }));
+function applyResetColumns(table, allKeys) {
+    console.debug("[AllColumnsView] applying");
+    // 1) Drop all saved visibility so EVERYTHING shows
+    clearColPrefs();
+
+    // 2) Rebuild with all columns visible (prefs = empty → visible by default)
+    const prefs = {};
+    const ordered = orderColumns(allKeys);
+    table.setColumns(makeColumns(ordered, prefs));
+
+    // 3) “All Columns” should allow natural widths → H-scroll
+    try {
+        if (typeof setLayout === "function") setLayout(table, "fitData");
+        else if (typeof table.updateOption === "function") table.updateOption("layout", "fitData");
+        else if (typeof table.setOptions === "function") table.setOptions({ layout: "fitData" });
+
+        // Ensure the “force-hscroll” class is ON to guarantee overflow
+        if (typeof toggleHScroll === "function") toggleHScroll(true);
+
+        // Keep newest first if present
+        if (table.getColumn("_blob_last_modified")) {
+            table.setSort([{ column: "_blob_last_modified", dir: "desc" }]);
+        }
+
+        table.redraw(true);
+        if (typeof debugWidths === "function") setTimeout(() => debugWidths("AllColumnsView", table), 0);
+    } catch (e) {
+        console.warn("[AllColumnsView] post-setup failed:", e);
+    }
 }
+
+
+/**
+ * Pick the right layout automatically when user shows/hides columns
+ * - If the inner table will overflow or the visible count exceeds your default set,
+ *   switch to fitData (H-scroll). Otherwise keep fitColumns (no H-scroll).
+ */
+function setLayoutForVisibleColumns(table) {
+    try {
+        const visibleCols = table.getColumns().filter(c => c.isVisible());
+
+        // Heuristic #1: count-based threshold
+        let needOverflow = visibleCols.length > DEFAULT_VISIBLE.size;
+
+        // Heuristic #2: real DOM measurement (authoritative if available)
+        const holder = document.querySelector("#table .tabulator-tableholder");
+        const inner = document.querySelector("#table .tabulator-table");
+        if (holder && inner) {
+            const holderW = holder.clientWidth;
+            const innerW = inner.scrollWidth || inner.offsetWidth;
+            // If the inner content is wider than the holder, we *must* allow H-scroll
+            needOverflow = innerW > holderW || needOverflow;
+            console.debug("[LayoutCheck] holderW=", holderW, "innerW=", innerW, "needOverflow=", needOverflow);
+        }
+
+        // Apply chosen layout + toggle the force-hscroll class
+        if (typeof setLayout === "function") setLayout(table, needOverflow ? "fitData" : "fitColumns");
+        else if (typeof table.updateOption === "function") table.updateOption("layout", needOverflow ? "fitData" : "fitColumns");
+        else if (typeof table.setOptions === "function") table.setOptions({ layout: needOverflow ? "fitData" : "fitColumns" });
+
+        if (typeof toggleHScroll === "function") toggleHScroll(needOverflow);
+
+        table.redraw(true);
+        if (typeof debugWidths === "function") setTimeout(() => debugWidths("VisibilityChange", table), 0);
+
+        console.debug("[Layout]",
+            needOverflow ? "fitData (H-scroll enabled)" : "fitColumns (no H-scroll)",
+            "| visible cols:", visibleCols.length);
+    } catch (e) {
+        console.warn("[Layout] cannot compute/apply layout:", e);
+    }
+}
+
+
+// Format a Unix epoch (seconds or milliseconds) into a readable ET string
+function epochToEt(cell) {
+    const v = cell.getValue();
+    if (v === null || v === undefined || v === "") return "";
+    const num = Number(v);
+    if (Number.isNaN(num)) return String(v);
+
+    // seconds → ms si nécessaire
+    const ms = num < 1e12 ? num * 1000 : num;
+    const d = new Date(ms);
+
+    // Format en Eastern Time (NY)
+    const fmt = new Intl.DateTimeFormat("en-US", {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false, timeZone: "America/New_York"
+    });
+
+    const parts = fmt.format(d).split(/[\/, :]/);  // [mm, dd, yyyy, hh, mm, ss]
+    return `${parts[2]}-${parts[0]}-${parts[1]} ${parts[3]}:${parts[4]}:${parts[5]} ET`;
+}
+
+// --- SAFE layout switcher for Tabulator v5/v6 ---
+function setLayout(table, layout) {
+    try {
+        const needOverflow = (layout === "fitData");
+        toggleHScroll(needOverflow);
+
+        if (typeof table.updateOption === "function") {
+            table.updateOption("layout", layout);     // v6+
+        } else if (typeof table.setOptions === "function") {
+            table.setOptions({ layout });             // v5
+        } else {
+            table.options = table.options || {};
+            table.options.layout = layout;
+        }
+        table.redraw(true);
+        console.debug("[Layout] set to:", layout);
+        // log sizes after painting
+        setTimeout(() => debugWidths(`setLayout:${layout}`, table), 0);
+    } catch (e) {
+        console.warn("[Layout] could not set layout:", e);
+    }
+}
+
+
+
+// --- Toggle a class on #table to force natural width (and thus H-scroll in the holder)
+function toggleHScroll(forceOn) {
+    const el = document.getElementById("table");
+    if (!el) return;
+    if (forceOn) el.classList.add("force-hscroll");
+    else el.classList.remove("force-hscroll");
+}
+
+// --- Debug current widths to see why scroll is/isn't appearing
+function debugWidths(where, tableInstance) {
+    const holder = document.querySelector("#table .tabulator-tableholder");
+    const inner = document.querySelector("#table .tabulator-table");
+    if (!holder || !inner) {
+        console.debug(`[Widths:${where}] holder/inner not found`);
+        return;
+    }
+    console.debug(
+        `[Widths:${where}] layout=${tableInstance?.options?.layout} | ` +
+        `holder: client=${holder.clientWidth}, scroll=${holder.scrollWidth} | ` +
+        `inner: offset=${inner.offsetWidth}`
+    );
+}
+
+
 
 
 /* === SECTION: COLUMN PICKER (Bootstrap modal) === */
@@ -280,26 +429,35 @@ function setFullHeight() {
 async function init() {
     const payload = await fetchData();
 
-    // counters
+    // Counters
     const countEl = document.getElementById("count");
     const lastEl = document.getElementById("last");
     if (countEl) countEl.innerText = payload.total;
     if (lastEl) lastEl.innerText = payload.last_load_human || humanizeIso(payload.last_load_utc);
 
+    // Wait for Tabulator script (CDN)
+    const ok = await waitForTabulator(5000);
+    if (!ok) {
+        console.error("[init] Tabulator not available (CDN blocked or slow).");
+        showError("Unable to load the table UI (Tabulator). Please allow access to the CDN or try again. " +
+            "Tip: switch to jsDelivr in index.html if your network blocks unpkg.com.");
+        return; // stop here instead of crashing
+    }
+
+    // From here Tabulator is defined
     allColumnKeys = payload.columns.slice();
 
     const ordered = orderColumns(allColumnKeys);
     const stored = loadColPrefs();
-    const usePrefs = Object.keys(stored).length > 0 ? stored : (() => {
-        const m = {}; allColumnKeys.forEach(k => m[k] = DEFAULT_VISIBLE.has(k)); return m;
-    })();
+    const usePrefs = Object.keys(stored).length > 0
+        ? stored
+        : (() => { const m = {}; allColumnKeys.forEach(k => m[k] = DEFAULT_VISIBLE.has(k)); return m; })();
 
-
-
+    // Create the table
     table = new Tabulator("#table", {
         data: payload.records,
         columns: makeColumns(ordered, usePrefs),
-        layout: "fitColumns",     // default: clean, no H-scroll
+        layout: "fitColumns",          // default: no H-scroll
         height: "100%",
         resizableColumns: true,
         movableColumns: true,
@@ -311,15 +469,18 @@ async function init() {
         theme: "bootstrap5",
     });
 
+    table = new Tabulator("#table", { /* ... */ });
 
-    // One guaranteed layout pass after everything is painted
-    table.on("tableBuilt", () => table.redraw(true));
-    window.addEventListener("load", () => { if (table) table.redraw(true); });
+    // initial: default view no H-scroll
+    toggleHScroll(false);
+    table.on("tableBuilt", () => {
+        table.redraw(true);
+        debugWidths("tableBuilt", table);
+    });
+    window.addEventListener("load", () => { if (table) { table.redraw(true); debugWidths("windowLoad", table); } });
+    window.addEventListener("resize", () => { if (table) { table.redraw(true); debugWidths("resize", table); } });
 
-    // Adjust height on window resize
-    window.addEventListener("resize", () => { if (table) table.redraw(true); });
-
-
+    table.on("columnVisibilityChanged", () => setLayoutForVisibleColumns(table));
 
     buildColumnPicker(table, makeColumns(ordered, usePrefs), usePrefs);
     wireButtons();
