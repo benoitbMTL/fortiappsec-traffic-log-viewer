@@ -145,11 +145,14 @@ function makeColumns(keys, colPrefs) {
       widthGrow: 1,
       titleFormatter: colTitleWithClose
     };
+
     if (k === "log_timestamp") {
-      col.title = "log_timestamp (ET)";
+      const tz = (APP_CONFIG && APP_CONFIG.timezone) ? APP_CONFIG.timezone : "UTC";
+      col.title = `log_timestamp (${tz})`;
       col.formatter = epochToEt;
-      col.headerTooltip = "Original field is epoch seconds; rendered as Eastern Time";
+      col.headerTooltip = `Original field is epoch seconds; rendered in ${tz}`;
     }
+
     return col;
   });
 }
@@ -164,13 +167,22 @@ function applyDefaultView(table, allKeys) {
   const ordered = orderColumns(allKeys);
   table.setColumns(makeColumns(ordered, prefs));
   try {
-    setLayout(table, "fitColumns"); toggleHScroll(true);
-    if (table.getColumn("log_timestamp")) table.setSort([{ column: "log_timestamp", dir: "desc" }]);
-    else if (table.getColumn("_blob_last_modified")) table.setSort([{ column: "_blob_last_modified", dir: "desc" }]);
-    table.redraw(true);
+    setLayout(table, "fitColumns");
+    toggleHScroll(true);
+
+    if (table.getColumn("log_timestamp")) {
+      table.setSort([{ column: "log_timestamp", dir: "desc" }]);
+    } else if (table.getColumn("_blob_last_modified")) {
+      table.setSort([{ column: "_blob_last_modified", dir: "desc" }]);
+    }
+
+    safeRedraw("DefaultView");
     setTimeout(() => debugWidths("DefaultView", table), 0);
-  } catch (e) { dwarn("[DefaultView] post-setup failed:", e); }
+  } catch (e) {
+    dwarn("[DefaultView] post-setup failed:", e);
+  }
 }
+
 
 function applyResetColumns(table, allKeys) {
   dlog("[AllColumnsView] applying");
@@ -179,38 +191,87 @@ function applyResetColumns(table, allKeys) {
   const ordered = orderColumns(allKeys);
   table.setColumns(makeColumns(ordered, prefs));
   try {
-    setLayout(table, "fitData"); toggleHScroll(true);
-    if (table.getColumn("log_timestamp")) table.setSort([{ column: "log_timestamp", dir: "desc" }]);
-    else if (table.getColumn("_blob_last_modified")) table.setSort([{ column: "_blob_last_modified", dir: "desc" }]);
-    table.redraw(true);
+    setLayout(table, "fitData");
+    toggleHScroll(true);
+
+    if (table.getColumn("log_timestamp")) {
+      table.setSort([{ column: "log_timestamp", dir: "desc" }]);
+    } else if (table.getColumn("_blob_last_modified")) {
+      table.setSort([{ column: "_blob_last_modified", dir: "desc" }]);
+    }
+
+    safeRedraw("AllColumnsView");
     setTimeout(() => debugWidths("AllColumnsView", table), 0);
-  } catch (e) { dwarn("[AllColumnsView] post-setup failed:", e); }
+  } catch (e) {
+    dwarn("[AllColumnsView] post-setup failed:", e);
+  }
 }
 
-/* === LAYOUT ADAPTATION === */
+
+/* === LAYOUT ADAPTATION (safe redraw) === */
 function setLayoutForVisibleColumns(table) {
-  if (typeof FORCE_HSCROLL !== 'undefined' && FORCE_HSCROLL) {
-    try { setLayout(table, 'fitData'); toggleHScroll(true); table.redraw(true); dlog('[Layout] FORCE_HSCROLL=on → fitData'); } catch (e) { }
+  // Local-safe redraw fallback if global safeRedraw() is missing
+  const _safeRedraw = (where) => {
+    try {
+      if (typeof safeRedraw === "function") {
+        safeRedraw(where);
+      } else {
+        // Fallback: defer to next frame and check DOM visibility
+        requestAnimationFrame(() => {
+          const holder = document.querySelector("#table .tabulator-tableholder");
+          if (holder && holder.offsetWidth > 0) {
+            table?.redraw(true);
+          } else {
+            // Try again once if holder was not ready
+            setTimeout(() => table?.redraw(true), 50);
+          }
+        });
+      }
+    } catch (e) {
+      dwarn(`[Redraw:${where}] failed`, e);
+    }
+  };
+
+  if (typeof FORCE_HSCROLL !== "undefined" && FORCE_HSCROLL) {
+    try {
+      setLayout(table, "fitData");
+      toggleHScroll(true);
+      _safeRedraw("FORCE_HSCROLL");
+      dlog("[Layout] FORCE_HSCROLL=on → fitData");
+      setTimeout(() => debugWidths("VisibilityChange(FORCE)", table), 0);
+    } catch (e) {
+      dwarn("[Layout] FORCE_HSCROLL branch failed:", e);
+    }
     return;
   }
+
   try {
-    const visibleCols = table.getColumns().filter(c => c.isVisible());
+    const visibleCols = table.getColumns().filter((c) => c.isVisible());
     let needOverflow = visibleCols.length > DEFAULT_VISIBLE.size;
 
     const holder = document.querySelector("#table .tabulator-tableholder");
     const inner = document.querySelector("#table .tabulator-table");
     if (holder && inner) {
-      const holderW = holder.clientWidth;
-      const innerW = inner.scrollWidth || inner.offsetWidth;
+      const holderW = holder.clientWidth || 0;
+      const innerW = inner.scrollWidth || inner.offsetWidth || 0;
       needOverflow = innerW > holderW || needOverflow;
-      dlog("[LayoutCheck]", { holderW, innerW, needOverflow, visibleCount: visibleCols.length });
+      dlog("[LayoutCheck]", {
+        holderW,
+        innerW,
+        needOverflow,
+        visibleCount: visibleCols.length,
+      });
+    } else {
+      dwarn("[LayoutCheck] holder/inner not found, using count heuristic only");
     }
 
     setLayout(table, needOverflow ? "fitData" : "fitColumns");
     toggleHScroll(needOverflow);
-    table.redraw(true);
-    setTimeout(() => debugWidths("VisibilityChange", table), 0);
-  } catch (e) { dwarn("[Layout] cannot compute/apply layout:", e); }
+    _safeRedraw("AutoLayout");
+    setTimeout(() => debugWidths("VisibilityChange(Auto)", table), 0);
+  } catch (e) {
+    dwarn("[Layout] cannot compute/apply layout:", e);
+  }
 }
 
 /* === TIMESTAMP FORMATTER === */
@@ -230,19 +291,60 @@ function epochToEt(cell) {
   return `${parts[2]}-${parts[0]}-${parts[1]} ${parts[3]}:${parts[4]}:${parts[5]} ET`;
 }
 
-/* === SAFE LAYOUT SWITCHER === */
+/* === SAFE LAYOUT SWITCHER (with guarded redraw) === */
 function setLayout(table, layout) {
   try {
-    const needOverflow = (layout === "fitData");
+    // Normalize layout to a supported value
+    const target = (layout === "fitData" || layout === "fitColumns") ? layout : "fitColumns";
+    const needOverflow = (target === "fitData");
+
+    // Toggle horizontal scroll helper class
     toggleHScroll(needOverflow);
-    if (typeof table.updateOption === "function") table.updateOption("layout", layout);
-    else if (typeof table.setOptions === "function") table.setOptions({ layout });
-    else { table.options = table.options || {}; table.options.layout = layout; }
-    table.redraw(true);
-    dlog("[Layout] set to:", layout);
-    setTimeout(() => debugWidths(`setLayout:${layout}`, table), 0);
-  } catch (e) { dwarn("[Layout] could not set layout:", e); }
+
+    // Apply option using whichever API Tabulator exposes
+    if (typeof table.updateOption === "function") {
+      table.updateOption("layout", target);          // v6+
+    } else if (typeof table.setOptions === "function") {
+      table.setOptions({ layout: target });          // v5
+    } else {
+      table.options = table.options || {};
+      table.options.layout = target;                 // last-resort fallback
+    }
+
+    // Guarded redraw: only redraw if the holder is measurable/visible
+    const guardedRedraw = (where) => {
+      try {
+        if (typeof safeRedraw === "function") {
+          safeRedraw(where);
+          return;
+        }
+      } catch (_) { /* ignore */ }
+
+      requestAnimationFrame(() => {
+        const holder = document.querySelector("#table .tabulator-tableholder");
+        if (holder && holder.offsetWidth > 0) {
+          table?.redraw(true);
+        } else {
+          // Try once more shortly after if first attempt couldn’t measure
+          setTimeout(() => {
+            const holder2 = document.querySelector("#table .tabulator-tableholder");
+            if (holder2 && holder2.offsetWidth > 0) table?.redraw(true);
+          }, 60);
+        }
+      });
+    };
+
+    guardedRedraw(`setLayout:${target}`);
+    dlog("[Layout] set to:", target);
+
+    // Widths debug after paint
+    setTimeout(() => debugWidths(`setLayout:${target}`, table), 0);
+    setTimeout(() => debugWidths(`setLayout:${target}:late`, table), 80);
+  } catch (e) {
+    dwarn("[Layout] could not set layout:", e);
+  }
 }
+
 
 /* === H-SCROLL TOGGLER === */
 function toggleHScroll(forceOn) {
@@ -367,13 +469,45 @@ document.addEventListener("DOMContentLoaded", () => {
    TABULATOR INIT
    =========================================================== */
 function setFullHeight() {
+  const tableHost = document.getElementById("table");
+  if (!tableHost) { dlog("[setFullHeight] #table missing"); return; }
+
+  // compute available height (optional debug)
   const header = document.querySelector(".navbar");
   const topH = (header?.offsetHeight || 0) + 24;
   const h = Math.max(240, window.innerHeight - topH);
-  const tableDiv = document.getElementById("table");
-  if (tableDiv) { dlog(`[setFullHeight] Calculated viewport space: ${h}px`); }
-  if (table) table.redraw(true);
+  dlog("[setFullHeight] viewportH=", window.innerHeight, "topH=", topH, "calcH=", h);
+
+  // Defer redraw until the next frame + only if the host is visible
+  if (!window.requestAnimationFrame) {
+    safeRedraw("setFullHeight(norf)");
+  } else {
+    requestAnimationFrame(() => safeRedraw("setFullHeight"));
+  }
 }
+
+function elementIsVisible(el) {
+  // visible if in DOM and has layout box
+  return !!(el && el.offsetParent !== null);
+}
+
+function safeRedraw(where = "unknown") {
+  try {
+    const host = document.getElementById("table");
+    if (!host) { dwarn("[safeRedraw]", where, "no #table"); return; }
+    if (!elementIsVisible(host)) {
+      dwarn("[safeRedraw]", where, "#table not visible yet → skip");
+      return;
+    }
+    if (table && typeof table.redraw === "function") {
+      table.redraw(true);
+      dlog("[safeRedraw]", where, "OK");
+    }
+  } catch (e) {
+    dwarn("[safeRedraw] failed at", where, e);
+  }
+}
+
 
 async function init() {
   dlog("init() start");
@@ -433,16 +567,46 @@ async function init() {
   toggleHScroll(true);
 
   // Bind table events (verbose)
-  table.on("tableBuilt", () => { dlog("[Tabulator] tableBuilt"); table.redraw(true); debugWidths("tableBuilt", table); });
+  table.on("tableBuilt", () => {
+    dlog("[Tabulator] tableBuilt");
+    safeRedraw("tableBuilt");
+    debugWidths("tableBuilt", table);
+  });
   table.on("renderComplete", () => dlog("[Tabulator] renderComplete"));
   table.on("dataProcessed", () => dlog("[Tabulator] dataProcessed"));
-  table.on("columnResized", (col) => dlog("[Tabulator] columnResized", col.getField()));
-  table.on("columnMoved", (col) => dlog("[Tabulator] columnMoved", col.getField()));
-  table.on("columnVisibilityChanged", (col, visible) => { dlog("[Tabulator] columnVisibilityChanged", col.getField(), "→", visible); rebuildColumnsList("columnVisibilityChanged"); });
+  table.on("columnResized", (col) =>
+    dlog("[Tabulator] columnResized", col.getField())
+  );
+  table.on("columnMoved", (col) =>
+    dlog("[Tabulator] columnMoved", col.getField())
+  );
+  table.on("columnVisibilityChanged", (col, visible) => {
+    dlog(
+      "[Tabulator] columnVisibilityChanged",
+      col.getField(),
+      "→",
+      visible
+    );
+    rebuildColumnsList("columnVisibilityChanged");
+  });
 
   // Layout & size handling
-  document.addEventListener("DOMContentLoaded", () => { if (table) { table.redraw(true); debugWidths("windowLoad", table); dlog("DOMContentLoaded redraw"); } });
-  window.addEventListener("resize", () => { if (table) { setFullHeight(); table.redraw(true); debugWidths("resize", table); } });
+  document.addEventListener("DOMContentLoaded", () => {
+    if (table) {
+      safeRedraw("DOMContentLoaded");
+      debugWidths("windowLoad", table);
+      dlog("DOMContentLoaded redraw");
+    }
+  });
+
+  window.addEventListener("resize", () => {
+    if (table) {
+      setFullHeight();
+      safeRedraw("resize");
+      debugWidths("resize", table);
+    }
+  });
+
 
   // Buttons & filters
   wireButtons();
@@ -640,7 +804,26 @@ async function saveConfig() {
     const saved = await res.json();
     dbg("saveConfig OK:", saved);
     APP_CONFIG = saved;
-    if (window.table) table.redraw(true); // timezone affects rendering
+
+
+
+    // After saving, update the timestamp column title with the new TZ
+    try {
+      const tz = APP_CONFIG?.timezone || "UTC";
+      const tsCol = table?.getColumn("log_timestamp");
+      if (tsCol) {
+        tsCol.updateDefinition({ title: `log_timestamp (${tz})` });
+      }
+      table?.redraw(true);
+      dlog("[Config] Updated timestamp column title to", tz);
+    } catch (e) {
+      dwarn("Could not update timestamp column title after save:", e);
+    }
+
+
+
+
+    if (window.table) safeRedraw("saveConfig"); // timezone affects rendering
   } catch (e) {
     dge("saveConfig failed:", e);
   }
@@ -654,11 +837,12 @@ async function resetConfigToDefault() {
     dbg("resetConfigToDefault OK:", def);
     APP_CONFIG = def;
     fillModalFromConfig(APP_CONFIG);
-    if (window.table) table.redraw(true);
+    if (window.table) safeRedraw("resetConfigToDefault");
   } catch (e) {
     dge("resetConfigToDefault failed:", e);
   }
 }
+
 
 async function testConfig() {
   const body = readModalToPayload(); // do not save
@@ -718,28 +902,40 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btnCfgXClose")?.addEventListener("click", () => dbg("Config modal closed via X"));
 });
 
-// ---------- Time formatter uses configured timezone ----------
+// ---------- Time formatter with French style (DD-MM-YYYY HH:mm:ss TZ) ----------
 function epochToEt(cell) {
   const v = cell.getValue();
   if (v === null || v === undefined || v === "") return "";
   const num = Number(v);
   if (Number.isNaN(num)) return String(v);
 
-  const ms = num < 1e12 ? num * 1000 : num;
+  const ms = num < 1e12 ? num * 1000 : num; // detect seconds vs ms
   const d = new Date(ms);
 
   const tz = (APP_CONFIG && APP_CONFIG.timezone) ? APP_CONFIG.timezone : "UTC";
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false, timeZone: tz
+
+  // French locale with seconds
+  const fmt = new Intl.DateTimeFormat("fr-FR", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: tz,
   });
 
-  const parts = fmt.format(d).split(/[\/, :]/);  // [mm, dd, yyyy, hh, mm, ss]
-  const out = `${parts[2]}-${parts[0]}-${parts[1]} ${parts[3]}:${parts[4]}:${parts[5]} ${tz}`;
+  // Example: "29/09/2025 00:42:36"
+  const formatted = fmt.format(d);
+
+  // Replace slashes by dashes: "29-09-2025 00:42:36"
+  const out = `${formatted.replace(/\//g, "-")} ${tz}`;
+
   console.debug("[epochToEt]", { in: v, ms, tz, out });
   return out;
 }
+
 
 
 
@@ -765,8 +961,29 @@ function showAlert(kind /* 'success' | 'danger' | 'warning' | 'info' */, message
 
 
 
+// Boot sequence: get config first, then build table
+async function bootstrapApp() {
+  try {
+    dlog("bootstrapApp() → loading config first");
+    // Charge l'état + remplit APP_CONFIG
+    const state = await fetchConfigState(); // met APP_CONFIG = state.config si présent
+    if (state.needs_config) {
+      dlog("No active config → auto-open modal");
+      const modalEl = document.getElementById("configModal");
+      const modal = new bootstrap.Modal(modalEl);
+      fillModalFromConfig(state.config || APP_CONFIG);
+      modal.show();
+    } else {
+      fillModalFromConfig(state.config || APP_CONFIG);
+    }
 
+    // ⚠️ Important: init table only after config is ready
+    await init();
+  } catch (e) {
+    derror("bootstrapApp failed:", e);
+    showError("Failed to initialize app. See console for details.");
+  }
+}
 
+bootstrapApp();
 
-/* === KICK OFF === */
-init();
