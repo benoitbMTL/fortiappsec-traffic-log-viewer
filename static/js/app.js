@@ -153,9 +153,20 @@ function makeColumns(keys, colPrefs) {
       col.headerTooltip = `Original field is epoch seconds; rendered in ${tz}`;
     }
 
+    // ↓ Add flag formatter for country fields
+    if (k === "srccountry" || k === "original_srccountry") {
+      if (window.CountryFlags && typeof window.CountryFlags.countryFlagFormatter === "function") {
+        col.formatter = window.CountryFlags.countryFlagFormatter(k);
+        col.headerTooltip = (k === "srccountry")
+          ? "Source country (flag + name)"
+          : "Original source country (flag + name)";
+      }
+    }
+
     return col;
   });
 }
+
 
 
 /* === DEFAULT/RESET VIEWS === */
