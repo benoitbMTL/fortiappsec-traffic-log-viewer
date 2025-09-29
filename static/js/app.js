@@ -1,150 +1,139 @@
 /* ===========================================================
-   FortiAppSec Traffic Logs UI
-   SECTIONS (JS):
-   - CONSTANTS & UTILS
-   - FETCH
-   - COLUMN LAYOUT & VISIBILITY (order, default view, reset)
-   - COLUMN PICKER (Bootstrap modal)
-   - TABULATOR TABLE (init, sort newest first, full-height)
-   - BUTTONS: reload, downloads, filters, default/reset
+   FortiAppSec Traffic Logs UI (Instrumented v2)
+   GOALS:
+   - Columns dropdown ALWAYS shows a per-field checkbox list
+   - Events are bound EVEN IF Tabulator isn't ready yet
+   - Massive console debugging via dlog/dwarn/derror
+   - Server-side (Python/Flask) logs via /data
    =========================================================== */
 
-/* === SECTION: CONSTANTS & UTILS === */
+/* === GLOBAL DEBUG HELPERS === */
+const DEBUG_TAG = "[FAS-UI]";
+// Force horizontal scroll: when true, table uses natural widths and shows an X-scrollbar
+const FORCE_HSCROLL = true;
+function dlog(...args) { try { console.debug(DEBUG_TAG, ...args); } catch (_) { } }
+function dwarn(...args) { try { console.warn(DEBUG_TAG, ...args); } catch (_) { } }
+function derror(...args) { try { console.error(DEBUG_TAG, ...args); } catch (_) { } }
+
+/* === CONSTANTS === */
 const COLVIS_KEY = "forti_col_visibility_v1";
 
+/* Preferred/default column order and initial visible set */
 const DEFAULT_ORDER = [
-    "log_timestamp",
-    "http_host",
-    "http_url",
-    "http_method",
-    "service",
-    "original_src",
-    "original_srccountry",
-    "dst",
-    "http_agent",
-    "http_refer",
-    "http_retcode",
+  "log_timestamp", "http_host", "http_url", "http_method", "service",
+  "original_src", "original_srccountry", "dst", "http_refer", "http_retcode", "http_agent",
 ];
+const DEFAULT_VISIBLE = new Set(DEFAULT_ORDER);
 
-const DEFAULT_VISIBLE = new Set([
-    "log_timestamp",
-    "http_host",
-    "http_url",
-    "http_method",
-    "service",
-    "original_src",
-    "original_srccountry",
-    "dst",
-    "http_agent",
-    "http_refer",
-    "http_retcode",
-]);
-
-// --- Robust loader: wait for Tabulator to be available ---
+/* === UTILITIES === */
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+/* Wait for Tabulator to exist on window, but don't block the whole UI */
 async function waitForTabulator(maxMs = 5000) {
-    const started = Date.now();
-    // Fail fast if script tag already reported an error
+  const started = Date.now();
+  if (window.__TABULATOR_FAILED__ === true) return false;
+  while (typeof window.Tabulator === "undefined") {
     if (window.__TABULATOR_FAILED__ === true) return false;
-
-    while (typeof window.Tabulator === "undefined") {
-        if (window.__TABULATOR_FAILED__ === true) return false;
-        if (Date.now() - started > maxMs) return false;
-        await sleep(100);
-    }
-    return true;
+    if (Date.now() - started > maxMs) return false;
+    await sleep(100);
+  }
+  return true;
 }
 
-function loadColPrefs() {
-    try { return JSON.parse(localStorage.getItem(COLVIS_KEY) || "{}"); }
-    catch { return {}; }
-}
-function saveColPrefs(map) {
-    try { localStorage.setItem(COLVIS_KEY, JSON.stringify(map)); } catch { }
-}
-function clearColPrefs() { try { localStorage.removeItem(COLVIS_KEY); } catch { } }
+/* localStorage helpers for column visibility */
+function loadColPrefs() { try { return JSON.parse(localStorage.getItem(COLVIS_KEY) || "{}"); } catch (e) { derror("loadColPrefs failed:", e); return {}; } }
+function saveColPrefs(map) { try { localStorage.setItem(COLVIS_KEY, JSON.stringify(map)); dlog("saveColPrefs", map); } catch (e) { derror("saveColPrefs failed:", e); } }
+function clearColPrefs() { try { localStorage.removeItem(COLVIS_KEY); dlog("clearColPrefs"); } catch (e) { derror("clearColPrefs failed:", e); } }
 
+/* Date helper (used for header info) */
 function humanizeIso(iso) {
-    if (!iso || iso === "n/a") return "-";
-    try {
-        const d = new Date(iso);
-        const fmt = new Intl.DateTimeFormat("en-US", {
-            year: "numeric", month: "short", day: "2-digit",
-            hour: "2-digit", minute: "2-digit", second: "2-digit",
-            timeZone: "UTC", hour12: false
-        });
-        return fmt.format(d) + " UTC";
-    } catch { return iso; }
-}
-function showError(msg) {
-    const el = document.getElementById("errorBanner");
-    if (!el) return;
-    el.textContent = msg;
-    el.classList.remove("d-none");
-}
-
-/* === SECTION: FETCH === */
-async function fetchData() {
-    const url = "/data?debug=1";
-    console.debug("[fetchData] GET", url);
-    const res = await fetch(url);
-    console.debug("[fetchData] status", res.status);
-    const payload = await res.json();
-    console.debug("[fetchData] payload keys:", Object.keys(payload));
-    if (payload.debug) console.debug("[fetchData] server debug:", payload.debug);
-    return payload;
-}
-
-/* === SECTION: COLUMN LAYOUT & VISIBILITY (order, default view, reset) === */
-function orderColumns(allKeys) {
-    const setAll = new Set(allKeys);
-    const first = DEFAULT_ORDER.filter(k => setAll.has(k));
-    const rest = allKeys.filter(k => !first.includes(k));
-    return [...first, ...rest];
-}
-
-
-/* Small close button in each column header to hide the column */
-function colTitleWithClose(cell, formatterParams, onRendered) {
-    // Column object & field
-    const column = cell.getColumn();
-    const field = column.getField();
-
-    // Wrapper
-    const el = document.createElement("div");
-    el.className = "col-title-wrap";
-
-    // Title + close button (Bootstrap's btn-close for small cross)
-    el.innerHTML = `
-    <span class="col-title text-truncate" title="${field}">${field}</span>
-    <button type="button" class="btn-close btn-close-white col-close" aria-label="Hide column"></button>
-  `;
-
-    onRendered(() => {
-        const btn = el.querySelector(".col-close");
-        btn.addEventListener("click", (e) => {
-            e.stopPropagation(); // don't trigger sort/filter focus
-            try {
-                // Hide column in table
-                column.hide();
-
-                // Persist preference: set visible=false
-                const prefs = loadColPrefs();
-                prefs[field] = false;
-                saveColPrefs(prefs);
-                console.debug("[ColClose] hidden:", field);
-            } catch (err) {
-                console.error("[ColClose] failed to hide column:", field, err);
-            }
-        });
+  if (!iso || iso === "n/a") return "-";
+  try {
+    const d = new Date(iso);
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      year: "numeric", month: "short", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+      timeZone: "UTC", hour12: false
     });
-
-    return el;
+    return fmt.format(d) + " UTC";
+  } catch (e) { derror("humanizeIso failed:", e); return iso; }
 }
 
-// --- REPLACE the two makeColumns() with this single version ---
+/* Error banner */
+function showError(msg) {
+  const el = document.getElementById("errorBanner");
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove("d-none");
+  derror("ERROR:", msg);
+}
 
+/* === FETCH DATA (server logs via debug=1) === */
+async function fetchData() {
+  const url = "/data";
+  dlog("[fetchData] GET", url);
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    dlog("[fetchData] status", res.status);
+    const payload = await res.json();
+    dlog("[fetchData] keys", Object.keys(payload));
+    if (payload.debug) dlog("[fetchData] server debug:", payload.debug);
+    return payload;
+  } catch (e) {
+    derror("[fetchData] failed:", e);
+    showError(`Failed to fetch data from ${url}. See console.`);
+    return { total: 0, columns: [], records: [] };
+  }
+}
+
+/* === COLUMN ORDERING === */
+function orderColumns(allKeys) {
+  const setAll = new Set(allKeys);
+  const first = DEFAULT_ORDER.filter(k => setAll.has(k));
+  const rest = allKeys.filter(k => !first.includes(k));
+  const ordered = [...first, ...rest];
+  dlog("[orderColumns]", { inCount: allKeys.length, outCount: ordered.length, first });
+  return ordered;
+}
+
+/* === HEADER TITLE FORMATTER WITH CLOSE (×) === */
+function colTitleWithClose(cell, formatterParams, onRendered) {
+  const column = cell.getColumn();
+  const field = column.getField();
+
+  const el = document.createElement("div");
+  el.className = "col-title-wrap";
+
+  el.innerHTML = `
+      <span class="col-title text-truncate" title="${field}">${field}</span>
+      <button type="button" class="btn btn-link p-0 ms-1 col-close" aria-label="Hide column" title="Hide column">
+        <i class="bi bi-x"></i>
+      </button>
+    `;
+
+  onRendered(() => {
+    const btn = el.querySelector(".col-close");
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      try {
+        column.hide();
+        const prefs = loadColPrefs();
+        prefs[field] = false;
+        saveColPrefs(prefs);
+        console.debug("[ColClose] hidden:", field);
+        setLayoutForVisibleColumns(table);
+      } catch (err) {
+        console.error("[ColClose] failed:", field, err);
+      }
+    });
+  });
+
+  return el;
+}
+
+
+/* === BUILD COLUMN DEFINITIONS === */
 function makeColumns(keys, colPrefs) {
     return keys.map(k => {
         const col = {
@@ -154,11 +143,8 @@ function makeColumns(keys, colPrefs) {
             resizable: true,
             visible: colPrefs[k] !== false,
             widthGrow: 1,
-            // keep the small “×” in header to hide a column
-            titleFormatter: colTitleWithClose,
+            titleFormatter: colTitleWithClose
         };
-
-        // Render Unix epoch (sec or ms) as Eastern Time
         if (k === "log_timestamp") {
             col.title = "log_timestamp (ET)";
             col.formatter = epochToEt;
@@ -169,388 +155,360 @@ function makeColumns(keys, colPrefs) {
 }
 
 
+/* === DEFAULT/RESET VIEWS === */
 function applyDefaultView(table, allKeys) {
-    console.debug("[DefaultView] applying");
-    // 1) Persist visibility prefs = only DEFAULT_VISIBLE shown
-    const prefs = {};
-    allKeys.forEach(k => { prefs[k] = DEFAULT_VISIBLE.has(k); });
-    saveColPrefs(prefs);
-
-    // 2) Order columns (put your priority ones first) and rebuild
-    const ordered = orderColumns(allKeys);
-    table.setColumns(makeColumns(ordered, prefs));
-
-    // 3) Default view should be compact (no H-scroll)
-    try {
-        // Prefer the safe layout switcher if present
-        if (typeof setLayout === "function") setLayout(table, "fitColumns");
-        else if (typeof table.updateOption === "function") table.updateOption("layout", "fitColumns");
-        else if (typeof table.setOptions === "function") table.setOptions({ layout: "fitColumns" });
-
-        // Ensure the “force-hscroll” class is off
-        if (typeof toggleHScroll === "function") toggleHScroll(false);
-
-        // Keep newest first (if your data has that column)
-        if (table.getColumn("_blob_last_modified")) {
-            table.setSort([{ column: "_blob_last_modified", dir: "desc" }]);
-        }
-
-        table.redraw(true);
-        if (typeof debugWidths === "function") setTimeout(() => debugWidths("DefaultView", table), 0);
-    } catch (e) {
-        console.warn("[DefaultView] post-setup failed:", e);
-    }
+  dlog("[DefaultView] applying");
+  const prefs = {};
+  allKeys.forEach(k => prefs[k] = DEFAULT_VISIBLE.has(k));
+  saveColPrefs(prefs);
+  const ordered = orderColumns(allKeys);
+  table.setColumns(makeColumns(ordered, prefs));
+  try {
+    setLayout(table, "fitColumns"); toggleHScroll(true);
+    if (table.getColumn("log_timestamp")) table.setSort([{ column: "log_timestamp", dir: "desc" }]);
+    else if (table.getColumn("_blob_last_modified")) table.setSort([{ column: "_blob_last_modified", dir: "desc" }]);
+    table.redraw(true);
+    setTimeout(() => debugWidths("DefaultView", table), 0);
+  } catch (e) { dwarn("[DefaultView] post-setup failed:", e); }
 }
-
 
 function applyResetColumns(table, allKeys) {
-    console.debug("[AllColumnsView] applying");
-    // 1) Drop all saved visibility so EVERYTHING shows
-    clearColPrefs();
-
-    // 2) Rebuild with all columns visible (prefs = empty → visible by default)
-    const prefs = {};
-    const ordered = orderColumns(allKeys);
-    table.setColumns(makeColumns(ordered, prefs));
-
-    // 3) “All Columns” should allow natural widths → H-scroll
-    try {
-        if (typeof setLayout === "function") setLayout(table, "fitData");
-        else if (typeof table.updateOption === "function") table.updateOption("layout", "fitData");
-        else if (typeof table.setOptions === "function") table.setOptions({ layout: "fitData" });
-
-        // Ensure the “force-hscroll” class is ON to guarantee overflow
-        if (typeof toggleHScroll === "function") toggleHScroll(true);
-
-        // Keep newest first if present
-        if (table.getColumn("_blob_last_modified")) {
-            table.setSort([{ column: "_blob_last_modified", dir: "desc" }]);
-        }
-
-        table.redraw(true);
-        if (typeof debugWidths === "function") setTimeout(() => debugWidths("AllColumnsView", table), 0);
-    } catch (e) {
-        console.warn("[AllColumnsView] post-setup failed:", e);
-    }
+  dlog("[AllColumnsView] applying");
+  clearColPrefs();
+  const prefs = {};
+  const ordered = orderColumns(allKeys);
+  table.setColumns(makeColumns(ordered, prefs));
+  try {
+    setLayout(table, "fitData"); toggleHScroll(true);
+    if (table.getColumn("log_timestamp")) table.setSort([{ column: "log_timestamp", dir: "desc" }]);
+    else if (table.getColumn("_blob_last_modified")) table.setSort([{ column: "_blob_last_modified", dir: "desc" }]);
+    table.redraw(true);
+    setTimeout(() => debugWidths("AllColumnsView", table), 0);
+  } catch (e) { dwarn("[AllColumnsView] post-setup failed:", e); }
 }
 
-
-/**
- * Pick the right layout automatically when user shows/hides columns
- * - If the inner table will overflow or the visible count exceeds your default set,
- *   switch to fitData (H-scroll). Otherwise keep fitColumns (no H-scroll).
- */
+/* === LAYOUT ADAPTATION === */
 function setLayoutForVisibleColumns(table) {
-    try {
-        const visibleCols = table.getColumns().filter(c => c.isVisible());
+  if (typeof FORCE_HSCROLL !== 'undefined' && FORCE_HSCROLL) {
+    try { setLayout(table, 'fitData'); toggleHScroll(true); table.redraw(true); dlog('[Layout] FORCE_HSCROLL=on → fitData'); } catch (e) { }
+    return;
+  }
+  try {
+    const visibleCols = table.getColumns().filter(c => c.isVisible());
+    let needOverflow = visibleCols.length > DEFAULT_VISIBLE.size;
 
-        // Heuristic #1: count-based threshold
-        let needOverflow = visibleCols.length > DEFAULT_VISIBLE.size;
-
-        // Heuristic #2: real DOM measurement (authoritative if available)
-        const holder = document.querySelector("#table .tabulator-tableholder");
-        const inner = document.querySelector("#table .tabulator-table");
-        if (holder && inner) {
-            const holderW = holder.clientWidth;
-            const innerW = inner.scrollWidth || inner.offsetWidth;
-            // If the inner content is wider than the holder, we *must* allow H-scroll
-            needOverflow = innerW > holderW || needOverflow;
-            console.debug("[LayoutCheck] holderW=", holderW, "innerW=", innerW, "needOverflow=", needOverflow);
-        }
-
-        // Apply chosen layout + toggle the force-hscroll class
-        if (typeof setLayout === "function") setLayout(table, needOverflow ? "fitData" : "fitColumns");
-        else if (typeof table.updateOption === "function") table.updateOption("layout", needOverflow ? "fitData" : "fitColumns");
-        else if (typeof table.setOptions === "function") table.setOptions({ layout: needOverflow ? "fitData" : "fitColumns" });
-
-        if (typeof toggleHScroll === "function") toggleHScroll(needOverflow);
-
-        table.redraw(true);
-        if (typeof debugWidths === "function") setTimeout(() => debugWidths("VisibilityChange", table), 0);
-
-        console.debug("[Layout]",
-            needOverflow ? "fitData (H-scroll enabled)" : "fitColumns (no H-scroll)",
-            "| visible cols:", visibleCols.length);
-    } catch (e) {
-        console.warn("[Layout] cannot compute/apply layout:", e);
-    }
-}
-
-
-// Format a Unix epoch (seconds or milliseconds) into a readable ET string
-function epochToEt(cell) {
-    const v = cell.getValue();
-    if (v === null || v === undefined || v === "") return "";
-    const num = Number(v);
-    if (Number.isNaN(num)) return String(v);
-
-    // seconds → ms si nécessaire
-    const ms = num < 1e12 ? num * 1000 : num;
-    const d = new Date(ms);
-
-    // Format en Eastern Time (NY)
-    const fmt = new Intl.DateTimeFormat("en-US", {
-        year: "numeric", month: "2-digit", day: "2-digit",
-        hour: "2-digit", minute: "2-digit", second: "2-digit",
-        hour12: false, timeZone: "America/New_York"
-    });
-
-    const parts = fmt.format(d).split(/[\/, :]/);  // [mm, dd, yyyy, hh, mm, ss]
-    return `${parts[2]}-${parts[0]}-${parts[1]} ${parts[3]}:${parts[4]}:${parts[5]} ET`;
-}
-
-// --- SAFE layout switcher for Tabulator v5/v6 ---
-function setLayout(table, layout) {
-    try {
-        const needOverflow = (layout === "fitData");
-        toggleHScroll(needOverflow);
-
-        if (typeof table.updateOption === "function") {
-            table.updateOption("layout", layout);     // v6+
-        } else if (typeof table.setOptions === "function") {
-            table.setOptions({ layout });             // v5
-        } else {
-            table.options = table.options || {};
-            table.options.layout = layout;
-        }
-        table.redraw(true);
-        console.debug("[Layout] set to:", layout);
-        // log sizes after painting
-        setTimeout(() => debugWidths(`setLayout:${layout}`, table), 0);
-    } catch (e) {
-        console.warn("[Layout] could not set layout:", e);
-    }
-}
-
-
-
-// --- Toggle a class on #table to force natural width (and thus H-scroll in the holder)
-function toggleHScroll(forceOn) {
-    const el = document.getElementById("table");
-    if (!el) return;
-    if (forceOn) el.classList.add("force-hscroll");
-    else el.classList.remove("force-hscroll");
-}
-
-// --- Debug current widths to see why scroll is/isn't appearing
-function debugWidths(where, tableInstance) {
     const holder = document.querySelector("#table .tabulator-tableholder");
     const inner = document.querySelector("#table .tabulator-table");
-    if (!holder || !inner) {
-        console.debug(`[Widths:${where}] holder/inner not found`);
-        return;
+    if (holder && inner) {
+      const holderW = holder.clientWidth;
+      const innerW = inner.scrollWidth || inner.offsetWidth;
+      needOverflow = innerW > holderW || needOverflow;
+      dlog("[LayoutCheck]", { holderW, innerW, needOverflow, visibleCount: visibleCols.length });
     }
-    console.debug(
-        `[Widths:${where}] layout=${tableInstance?.options?.layout} | ` +
-        `holder: client=${holder.clientWidth}, scroll=${holder.scrollWidth} | ` +
-        `inner: offset=${inner.offsetWidth}`
-    );
+
+    setLayout(table, needOverflow ? "fitData" : "fitColumns");
+    toggleHScroll(needOverflow);
+    table.redraw(true);
+    setTimeout(() => debugWidths("VisibilityChange", table), 0);
+  } catch (e) { dwarn("[Layout] cannot compute/apply layout:", e); }
 }
 
-
-
-
-/* === SECTION: COLUMN PICKER (Bootstrap modal) === */
-let colModal = null;
-function buildColumnPicker(table, columns, colPrefs) {
-    const modalEl = document.getElementById("colPickerModal");
-    const listEl = document.getElementById("colList");
-    const searchEl = document.getElementById("colSearch");
-    if (!modalEl) {
-        console.warn("[Columns] modal element #colPickerModal not found.");
-        return;
-    }
-    colModal = new bootstrap.Modal(modalEl);
-
-    const rebuild = (filterText = "") => {
-        listEl.innerHTML = "";
-        columns.forEach(colDef => {
-            const field = colDef.field;
-            if (filterText && !field.toLowerCase().includes(filterText.toLowerCase())) return;
-
-            const colObj = table.getColumn(field);
-            const checked = colObj ? colObj.isVisible() : (colPrefs[field] !== false);
-
-            // Bootstrap form-check row
-            const row = document.createElement("div");
-            row.className = "form-check";
-            row.innerHTML = `
-        <input class="form-check-input" type="checkbox" ${checked ? "checked" : ""} id="ck_${field}">
-        <label class="form-check-label" for="ck_${field}">${field}</label>
-      `;
-            row.querySelector("input").addEventListener("change", (e) => {
-                const on = e.target.checked;
-                console.debug("[Columns] toggle", field, "→", on);
-                if (on) { table.showColumn(field); colPrefs[field] = true; }
-                else { table.hideColumn(field); colPrefs[field] = false; }
-                saveColPrefs(colPrefs);
-
-                // NEW: choose layout based on how many columns are now visible
-                setLayoutForVisibleColumns(table);
-            });
-            listEl.appendChild(row);
-        });
-    };
-
-    searchEl.oninput = () => rebuild(searchEl.value);
-
-    document.getElementById("openColPicker").onclick = () => {
-        console.debug("[Columns] open clicked; table ready?", !!table);
-        if (!table) {
-            showError("Columns panel unavailable: Tabulator did not load.");
-            return;
-        }
-        // Rebuild from current columns
-        const liveCols = table.getColumns().map(c => ({ field: c.getField() }));
-        columns.length = 0;
-        columns.push(...liveCols);
-        rebuild("");
-        searchEl.value = "";
-        colModal.show();
-    };
+/* === TIMESTAMP FORMATTER === */
+function epochToEt(cell) {
+  const v = cell.getValue();
+  if (v === null || v === undefined || v === "") return "";
+  const num = Number(v);
+  if (Number.isNaN(num)) return String(v);
+  const ms = num < 1e12 ? num * 1000 : num;
+  const d = new Date(ms);
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false, timeZone: "America/New_York"
+  });
+  const parts = fmt.format(d).split(/[\/, :]/);
+  return `${parts[2]}-${parts[0]}-${parts[1]} ${parts[3]}:${parts[4]}:${parts[5]} ET`;
 }
 
-/* === SECTION: TABULATOR TABLE (init, sort newest first, full-height) === */
-let table = null;
-let allColumnKeys = [];
+/* === SAFE LAYOUT SWITCHER === */
+function setLayout(table, layout) {
+  try {
+    const needOverflow = (layout === "fitData");
+    toggleHScroll(needOverflow);
+    if (typeof table.updateOption === "function") table.updateOption("layout", layout);
+    else if (typeof table.setOptions === "function") table.setOptions({ layout });
+    else { table.options = table.options || {}; table.options.layout = layout; }
+    table.redraw(true);
+    dlog("[Layout] set to:", layout);
+    setTimeout(() => debugWidths(`setLayout:${layout}`, table), 0);
+  } catch (e) { dwarn("[Layout] could not set layout:", e); }
+}
 
+/* === H-SCROLL TOGGLER === */
+function toggleHScroll(forceOn) {
+  const el = document.getElementById("table");
+  if (!el) return;
+  if (forceOn) el.classList.add("force-hscroll");
+  else el.classList.remove("force-hscroll");
+  dlog("[toggleHScroll]", { forceOn, classList: el.className });
+}
+
+/* === WIDTHS DEBUG === */
+function debugWidths(where, tableInstance) {
+  const holder = document.querySelector("#table .tabulator-tableholder");
+  const inner = document.querySelector("#table .tabulator-table");
+  if (!holder || !inner) { dlog(`[Widths:${where}] holder/inner not found`); return; }
+  dlog(`[Widths:${where}] layout=${tableInstance?.options?.layout} | holder.client=${holder.clientWidth} inner.offset=${inner.offsetWidth}`);
+}
+
+/* ===========================================================
+   COLUMNS DROPDOWN (works even if table isn't ready yet)
+   - Binds Bootstrap dropdown events early
+   - Rebuilds the checkbox list on show/shown and on init
+   - Buttons All / None / Default wired early (no-op logged if table not ready)
+   =========================================================== */
+let table = null;           // will be set later
+let allColumnKeys = [];     // filled after fetch
+let bootstrapDropdown = null;
+
+function rebuildColumnsList(reason = "manual") {
+  const listEl = document.getElementById("colList");
+  if (!listEl) { dwarn("[Columns]", reason, "no #colList in DOM"); return; }
+  if (!table) { dwarn("[Columns]", reason, "table not ready; building empty list"); listEl.innerHTML = ""; return; }
+
+  const cols = table.getColumns();
+  dlog("[Columns] rebuild", reason, "columns:", cols.length);
+  listEl.innerHTML = "";
+
+  cols.forEach(col => {
+    const field = col.getField();
+    if (!field) return;
+    const id = "ck_" + field.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const row = document.createElement("label");
+    row.className = "form-check d-flex align-items-center gap-2 m-0";
+    row.innerHTML = `
+      <input class="form-check-input" type="checkbox" id="${id}" ${col.isVisible() ? "checked" : ""}>
+      <span class="form-check-label" for="${id}">${field}</span>
+    `;
+    row.querySelector("input").addEventListener("change", (e) => {
+      const on = e.target.checked;
+      dlog("[Columns] toggle", field, "→", on);
+      if (on) { table.showColumn(field); updateColPref(field, true); }
+      else { table.hideColumn(field); updateColPref(field, false); }
+      setLayoutForVisibleColumns(table);
+    });
+    listEl.appendChild(row);
+  });
+
+  dlog("[Columns] rebuild done. list children:", listEl.childElementCount);
+}
+
+function updateColPref(field, visible) {
+  const prefs = loadColPrefs();
+  prefs[field] = !!visible;
+  saveColPrefs(prefs);
+}
+
+/* Bind dropdown events EARLY (before Tabulator) */
+document.addEventListener("DOMContentLoaded", () => {
+  const toggleBtn = document.getElementById("openColDropdown");
+  const listEl = document.getElementById("colList");
+  const btnAll = document.getElementById("colAll");
+  const btnNone = document.getElementById("colNone");
+  const btnDefault = document.getElementById("colDefault");
+
+  if (!toggleBtn || !listEl) {
+    dwarn("[Columns] DOMContentLoaded: required elements missing", { toggleBtn: !!toggleBtn, listEl: !!listEl });
+    return;
+  }
+
+  // Force Bootstrap dropdown init to ensure events fire
+  try {
+    bootstrapDropdown = bootstrap.Dropdown.getOrCreateInstance(toggleBtn);
+    dlog("[Columns] Bootstrap Dropdown initialized");
+  } catch (e) {
+    derror("[Columns] Bootstrap initialization failed:", e);
+  }
+
+  // Listen to Bootstrap dropdown lifecycle events on the toggle button
+  toggleBtn.addEventListener("show.bs.dropdown", () => dlog("[Columns] show.bs.dropdown"));
+  toggleBtn.addEventListener("shown.bs.dropdown", () => { dlog("[Columns] shown.bs.dropdown → rebuildColumnsList"); rebuildColumnsList("shown.bs.dropdown"); });
+
+  // Extra click to log user interaction
+  toggleBtn.addEventListener("click", () => dlog("[Columns] toggle button clicked"));
+
+  // Wire All/None/Default buttons (they work even if table not ready; we log and no-op)
+  btnAll?.addEventListener("click", () => {
+    dlog("[Columns] All clicked");
+    if (!table) { dwarn("[Columns] All clicked but table not ready"); return; }
+    table.getColumns().forEach(c => { c.show(); updateColPref(c.getField(), true); });
+    rebuildColumnsList("All");
+    setLayoutForVisibleColumns(table);
+  });
+  btnNone?.addEventListener("click", () => {
+    dlog("[Columns] None clicked");
+    if (!table) { dwarn("[Columns] None clicked but table not ready"); return; }
+    table.getColumns().forEach(c => { c.hide(); updateColPref(c.getField(), false); });
+    rebuildColumnsList("None");
+    setLayoutForVisibleColumns(table);
+  });
+  btnDefault?.addEventListener("click", () => {
+    dlog("[Columns] Default clicked");
+    if (!table) { dwarn("[Columns] Default clicked but table not ready"); return; }
+    applyDefaultView(table, allColumnKeys);
+    rebuildColumnsList("Default");
+  });
+
+  // Build an initial (possibly empty) list so you see immediate feedback
+  rebuildColumnsList("DOMContentLoaded");
+});
+
+/* ===========================================================
+   TABULATOR INIT
+   =========================================================== */
 function setFullHeight() {
-    // compute available height for the table inside the viewport
-    const header = document.querySelector("h2");
-    // pick the first flex toolbar on the page
-    const toolbar = document.querySelector(".d-flex.flex-wrap, .toolbar");
-    const topH = (header?.offsetHeight || 0) + (toolbar?.offsetHeight || 0) + 32; // + margins
-    const h = Math.max(240, window.innerHeight - topH - 24);
-    const tableDiv = document.getElementById("table");
-    tableDiv.style.height = `${h}px`;
-    if (table) table.redraw(true);
+  const header = document.querySelector(".navbar");
+  const topH = (header?.offsetHeight || 0) + 24;
+  const h = Math.max(240, window.innerHeight - topH);
+  const tableDiv = document.getElementById("table");
+  if (tableDiv) { dlog(`[setFullHeight] Calculated viewport space: ${h}px`); }
+  if (table) table.redraw(true);
 }
 
 async function init() {
-    const payload = await fetchData();
+  dlog("init() start");
+  const payload = await fetchData();
+  if (!payload.records || payload.records.length === 0) {
+    dwarn("[init] No records found. Stopping initialization.", payload);
+    if (payload.total > 0) showError("Data loaded, but no records were provided for the table.");
+    else showError("No data records available to display.");
+    return;
+  }
 
-    // Counters
-    const countEl = document.getElementById("count");
-    const lastEl = document.getElementById("last");
-    if (countEl) countEl.innerText = payload.total;
-    if (lastEl) lastEl.innerText = payload.last_load_human || humanizeIso(payload.last_load_utc);
+  // Header counters
+  const countEl = document.getElementById("count");
+  const lastEl = document.getElementById("last");
+  if (countEl) countEl.innerText = payload.total;
+  if (lastEl) lastEl.innerText = payload.last_load_human || humanizeIso(payload.last_load_utc);
+  dlog(`[init] Total records: ${payload.total}, Columns: ${payload.columns.length}`);
 
-    // Wait for Tabulator script (CDN)
-    const ok = await waitForTabulator(5000);
-    if (!ok) {
-        console.error("[init] Tabulator not available (CDN blocked or slow).");
-        showError("Unable to load the table UI (Tabulator). Please allow access to the CDN or try again. " +
-            "Tip: switch to jsDelivr in index.html if your network blocks unpkg.com.");
-        return; // stop here instead of crashing
-    }
+  // Ensure Tabulator is loaded
+  const ok = await waitForTabulator(5000);
+  if (!ok) {
+    derror("[init] Tabulator not available.");
+    showError("Unable to load the table UI (Tabulator). Check CDN/network.");
+    return;
+  }
 
-    // From here Tabulator is defined
-    allColumnKeys = payload.columns.slice();
+  allColumnKeys = payload.columns.slice();
+  const ordered = orderColumns(allColumnKeys);
+  const stored = loadColPrefs();
+  const usePrefs = Object.keys(stored).length > 0 ? stored : (() => {
+    const m = {}; allColumnKeys.forEach(k => m[k] = DEFAULT_VISIBLE.has(k)); return m;
+  })();
 
-    const ordered = orderColumns(allColumnKeys);
-    const stored = loadColPrefs();
-    const usePrefs = Object.keys(stored).length > 0
-        ? stored
-        : (() => { const m = {}; allColumnKeys.forEach(k => m[k] = DEFAULT_VISIBLE.has(k)); return m; })();
+  dlog("[init] columns to use:", ordered.length, "visible count:", Object.values(usePrefs).filter(v => v !== false).length);
 
-    // Create the table
-    table = new Tabulator("#table", {
-        data: payload.records,
-        columns: makeColumns(ordered, usePrefs),
-        layout: "fitColumns",          // default: no H-scroll
-        height: "100%",
-        resizableColumns: true,
-        movableColumns: true,
-        selectable: true,
-        pagination: true,
-        paginationSize: 15,
-        paginationSizeSelector: [15, 25, 50, 100, 250, 300],
-        initialSort: [{ column: "_blob_last_modified", dir: "desc" }],
-        theme: "bootstrap5",
-    });
+  // Create the Tabulator table
+  table = new Tabulator("#table", {
+    data: payload.records,
+    columns: makeColumns(ordered, usePrefs),
+    layout: "fitData",
+    height: "100%",
+    resizableColumns: true,
+    movableColumns: true,
+    selectable: true,
+    pagination: true,
+    paginationSize: 15,
+    paginationSizeSelector: [15, 25, 50, 100, 250, 300],
+    initialSort: [{ column: (allColumnKeys.includes("log_timestamp") ? "log_timestamp" : "_blob_last_modified"), dir: "desc" }],
+    theme: "bootstrap5",
+  });
 
-    table = new Tabulator("#table", { /* ... */ });
+  // Expose for manual debugging
+  window.table = table;
+  dlog("Tabulator instance created and exposed as window.table");
 
-    // initial: default view no H-scroll
-    toggleHScroll(false);
-    table.on("tableBuilt", () => {
-        table.redraw(true);
-        debugWidths("tableBuilt", table);
-    });
-    window.addEventListener("load", () => { if (table) { table.redraw(true); debugWidths("windowLoad", table); } });
-    window.addEventListener("resize", () => { if (table) { table.redraw(true); debugWidths("resize", table); } });
+  // Initial layout
+  toggleHScroll(true);
 
-    table.on("columnVisibilityChanged", () => setLayoutForVisibleColumns(table));
+  // Bind table events (verbose)
+  table.on("tableBuilt", () => { dlog("[Tabulator] tableBuilt"); table.redraw(true); debugWidths("tableBuilt", table); });
+  table.on("renderComplete", () => dlog("[Tabulator] renderComplete"));
+  table.on("dataProcessed", () => dlog("[Tabulator] dataProcessed"));
+  table.on("columnResized", (col) => dlog("[Tabulator] columnResized", col.getField()));
+  table.on("columnMoved", (col) => dlog("[Tabulator] columnMoved", col.getField()));
+  table.on("columnVisibilityChanged", (col, visible) => { dlog("[Tabulator] columnVisibilityChanged", col.getField(), "→", visible); rebuildColumnsList("columnVisibilityChanged"); });
 
-    buildColumnPicker(table, makeColumns(ordered, usePrefs), usePrefs);
-    wireButtons();
+  // Layout & size handling
+  document.addEventListener("DOMContentLoaded", () => { if (table) { table.redraw(true); debugWidths("windowLoad", table); dlog("DOMContentLoaded redraw"); } });
+  window.addEventListener("resize", () => { if (table) { setFullHeight(); table.redraw(true); debugWidths("resize", table); } });
+
+  // Buttons & filters
+  wireButtons();
+
+  // First sizing
+  setFullHeight();
+
+  dlog("[init] Tabulator initialized");
 }
 
-/* === SECTION: BUTTONS: reload, downloads, filters, default/reset === */
 function wireButtons() {
-    const qf = document.getElementById("quickFilter");
-    const clearBtn = document.getElementById("clearFilter");
+  const qf = document.getElementById("quickFilter");
+  const clearBtn = document.getElementById("clearFilter");
 
-    if (clearBtn) {
-        clearBtn.onclick = () => { if (table) { qf.value = ""; table.clearFilter(true); } };
-    }
-    if (qf) {
-        qf.addEventListener("input", (e) => {
-            const val = e.target.value.toLowerCase();
-            if (!table) return;
-            if (!val) { table.clearFilter(true); return; }
-            table.setFilter(function (rowData) {
-                for (const k in rowData) {
-                    const v = rowData[k];
-                    if (v && String(v).toLowerCase().includes(val)) return true;
-                }
-                return false;
-            });
-        });
-    }
+  if (clearBtn) {
+    clearBtn.onclick = () => {
+      dlog("[Button] Clear Filter");
+      if (table) { qf.value = ""; table.clearFilter(true); }
+    };
+  }
+  if (qf) {
+    qf.addEventListener("input", (e) => {
+      const val = e.target.value.toLowerCase();
+      dlog("[QuickFilter] input:", val);
+      if (!table) return;
+      if (!val) { table.clearFilter(true); return; }
+      table.setFilter(function (rowData) {
+        for (const k in rowData) {
+          const v = rowData[k];
+          if (v && String(v).toLowerCase().includes(val)) return true;
+        }
+        return false;
+      });
+    });
+  }
 
-    const btnCsv = document.getElementById("btnDownloadCsv");
-    const btnJson = document.getElementById("btnDownloadJson");
-    if (btnCsv) btnCsv.onclick = () => {
-        if (!table) { showError("CSV download unavailable: Tabulator did not load."); return; }
-        try { table.download("csv", "traffic_logs.csv"); }
-        catch (e) { console.error(e); showError("CSV download failed. See console."); }
-    };
-    if (btnJson) btnJson.onclick = () => {
-        if (!table) { showError("JSON download unavailable: Tabulator did not load."); return; }
-        try { table.download("json", "traffic_logs.json"); }
-        catch (e) { console.error(e); showError("JSON download failed. See console."); }
-    };
+  const btnDefault = document.getElementById("btnDefaultView");
+  const btnReset = document.getElementById("btnAllColumns");
+  if (btnDefault) btnDefault.onclick = () => { dlog("[Button] Default View"); if (table) applyDefaultView(table, allColumnKeys); };
+  if (btnReset) btnReset.onclick = () => { dlog("[Button] All Columns View"); if (table) applyResetColumns(table, allColumnKeys); };
 
-    const btnDefault = document.getElementById("btnDefaultView");
-    const btnReset = document.getElementById("btnAllColumns");
-    if (btnDefault) btnDefault.onclick = () => {
-        if (!table) { showError("Cannot apply default view: table not ready."); return; }
-        applyDefaultView(table, allColumnKeys);
-    };
-    if (btnReset) btnReset.onclick = () => {
-        if (!table) { showError("Cannot reset: table not ready."); return; }
-        applyResetColumns(table, allColumnKeys);
-    };
+  const btnCsv = document.getElementById("btnDownloadCsv");
+  const btnJson = document.getElementById("btnDownloadJson");
+  if (btnCsv) btnCsv.onclick = () => { if (!table) { showError("CSV download unavailable"); return; } try { dlog("[Button] Download CSV"); table.download("csv", "traffic_logs.csv"); } catch (e) { derror(e); showError("CSV download failed"); } };
+  if (btnJson) btnJson.onclick = () => { if (!table) { showError("JSON download unavailable"); return; } try { dlog("[Button] Download JSON"); table.download("json", "traffic_logs.json"); } catch (e) { derror(e); showError("JSON download failed"); } };
 
-    const reloadBtn = document.getElementById("reloadBtn");
-    if (reloadBtn) {
-        reloadBtn.onclick = async () => {
-            const btn = reloadBtn;
-            btn.disabled = true; btn.textContent = "Reloading…";
-            try {
-                const r = await fetch("/reload", { method: "POST" });
-                console.debug("[Reload] status:", r.status);
-                location.reload();
-            } catch (e) {
-                console.error("[Reload] failed:", e);
-                showError("Reload failed. Check console.");
-            } finally {
-                btn.disabled = false; btn.textContent = "Reload from Azure";
-            }
-        };
-    }
+  const reloadBtn = document.getElementById("reloadBtn");
+  if (reloadBtn) {
+    reloadBtn.onclick = async () => {
+      const btn = reloadBtn;
+      btn.disabled = true; btn.textContent = "Reloading…";
+      dlog("[Button] Reload from Azure");
+      try {
+        const r = await fetch("/reload", { method: "POST" });
+        dlog("[Reload] status:", r.status);
+        if (r.ok) location.reload();
+        else throw new Error(`Server returned status ${r.status}: ${await r.text()}`);
+      } catch (e) {
+        derror("[Reload] failed:", e);
+        showError("Reload failed. See console.");
+      } finally {
+        btn.disabled = false; btn.textContent = "Reload from Azure";
+      }
+    };
+  }
 }
 
-// Boot
+/* === KICK OFF === */
 init();

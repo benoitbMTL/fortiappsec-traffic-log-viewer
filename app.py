@@ -51,7 +51,10 @@ DF_CACHE = None
 LAST_LOAD_UTC = None
 
 app = Flask(__name__)
-app.logger.setLevel("DEBUG")
+
+# === Toggle Python debug here ===
+PY_DEBUG = False  # set True to enable extra server debug; False to disable
+app.logger.setLevel("DEBUG" if PY_DEBUG else "INFO")
 
 
 # ===== SECTION: AZURE INGEST =====
@@ -153,7 +156,7 @@ def data():
     """
     ensure_loaded()
 
-    debug_mode = request.args.get("debug", default="0") == "1"
+    debug_mode = PY_DEBUG
     total = int(len(DF_CACHE)) if DF_CACHE is not None else 0
     last_iso = LAST_LOAD_UTC.isoformat() if LAST_LOAD_UTC else "n/a"
     last_hmn = humanize_utc(LAST_LOAD_UTC)

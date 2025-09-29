@@ -1,212 +1,145 @@
 /* ============================================================
-   FortiAppSec Traffic Logs – CSS (Bootstrap 5 + Tabulator)
-   SECTIONS:
-   1) Layout baseline (flex page, containers)
-   2) Tabulator: blue Bootstrap theme + compact table
-   3) Tabulator: header filters (small)
-   4) Tabulator: column header title + close-icon layout
-   5) Tabulator: alternating row colors
-   6) Tabulator: footer (pagination) blue + compact
-      6.1) Pagination select FIX (readable options)
-   7) Optional: fallback HTML table (rarely used)
+   FortiAppSec Traffic Logs – CSS fix
+   - Blue header (same as footer)
+   - Header filters on a new line under the title (no wider columns)
+   - Pagination buttons sized like the Page Size select
+   - Keep compact layout + horizontal scroll support
    ============================================================ */
 
-/* ========== 1) Layout baseline (flex page, containers) ========== */
-html,
-body {
-  height: 100%;
+/* ---------------------------
+   Horizontal scroll support
+   --------------------------- */
+#table .tabulator-tableholder {
+  overflow-x: auto !important;
+  -webkit-overflow-scrolling: touch;
+}
+#table.force-hscroll .tabulator-table {
+  width: auto !important;
+  min-width: 100% !important; /* allow content to exceed holder width */
 }
 
-body {
-  margin: 0;
-}
-
-/* Make Tabulator fill all remaining height in the card-body */
-#table {
-  width: 100%;
-  height: 100%;
-}
-
-main>.container-fluid {
-  padding-bottom: .75rem;
-}
-
-/* ========== 2) Tabulator: blue Bootstrap theme + compact table ========== */
+/* ---------------------------
+   Header: blue + compact
+   --------------------------- */
 .tabulator.bootstrap5 .tabulator-header {
   background-color: var(--bs-primary) !important;
   color: #fff !important;
-  border-bottom: 1px solid rgba(255, 255, 255, .25);
+  padding: 2px 4px;
+  min-height: 32px;          /* compact header height */
+  font-size: 0.85rem;        /* same as rows/footer */
+  line-height: 1.3;
+  border-bottom: 1px solid rgba(255,255,255,0.25);
 }
 
-.tabulator.bootstrap5 .tabulator-col {
-  background: transparent !important;
+/* Make header cells show the blue from the parent (not white) */
+.tabulator.bootstrap5 .tabulator-header .tabulator-col {
+  background-color: transparent !important;
   color: inherit !important;
-  border-right: 1px solid rgba(255, 255, 255, .25);
+  padding: 2px 6px !important;          /* tight padding */
+  border-right: 1px solid rgba(255,255,255,0.25);
 }
 
-.tabulator.bootstrap5 .tabulator-col .tabulator-col-title {
+/* Keep title readable on blue */
+.tabulator.bootstrap5 .tabulator-header .tabulator-col-title {
+  color: inherit !important;
   font-weight: 600;
-  font-size: .80rem;
-}
-
-.tabulator.bootstrap5 .tabulator-row {
-  background-color: #fff !important;
-  font-size: .80rem;
-}
-
-.tabulator.bootstrap5 .tabulator-row.tabulator-selected {
-  background-color: var(--bs-primary) !important;
-  color: #fff !important;
-}
-
-.tabulator.bootstrap5 .tabulator-cell {
-  border-right: 1px solid #e7eef8 !important;
-}
-
-/* ========== 3) Tabulator: header filters (small) ========== */
-.tabulator.bootstrap5 .tabulator-header-filter input,
-.tabulator.bootstrap5 .tabulator-header-filter select {
-  font-size: 0.75rem;
-  padding: 0.1rem 0.25rem;
-  height: calc(1.5em + 0.25rem);
   line-height: 1.2;
-}
-
-/* ========== 4) Tabulator: column header title + close-icon layout ========== */
-.tabulator.bootstrap5 .tabulator-col .col-title-wrap {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: .25rem;
-  min-width: 0;
-}
-
-.tabulator.bootstrap5 .tabulator-col .col-title {
-  font-size: .875rem;
-  font-weight: 600;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.tabulator.bootstrap5 .tabulator-col .col-close {
-  transform: scale(.85);
+/* Put header filters on a NEW line, under the title (no wider columns) */
+.tabulator.bootstrap5 .tabulator-col .tabulator-header-filter {
+  display: block;            /* force a line break below the title */
+  width: 100%;
+  margin-top: .25rem;
+}
+
+/* Inputs/selects inside header filters: same size as table text */
+#table .tabulator-header .tabulator-col .tabulator-header-filter input,
+#table .tabulator-header .tabulator-col .tabulator-header-filter select {
+  font-size: 0.85rem;        /* match row text */
+  line-height: 1.2;
+  height: auto;
+  padding: .2rem .4rem;
+  background-color: #fff;
+  color: #212529;
+  border: 1px solid #ced4da;
+  border-radius: .25rem;
+}
+
+/* Small close icon in header */
+#table .col-title-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+}
+#table .col-close .bi {
+  font-size: 0.8rem;
+  line-height: 1;
+  color: #fff;               /* white icon on blue */
   opacity: .85;
 }
+#table .col-close .bi:hover { opacity: 1; }
 
-.tabulator.bootstrap5 .tabulator-col .col-close:hover {
-  opacity: 1;
+/* ---------------------------
+   Rows: compact + readable
+   --------------------------- */
+.tabulator.bootstrap5 .tabulator-row,
+.tabulator.bootstrap5 .tabulator-cell {
+  font-size: 0.85rem;        /* ~14px */
+  line-height: 1.3;
+}
+.tabulator.bootstrap5 .tabulator-cell {
+  padding-top: .25rem;
+  padding-bottom: .25rem;
 }
 
-/* ========== 5) Tabulator: alternating row colors (robust) ========== */
-.tabulator.bootstrap5 .tabulator-row.tabulator-row-odd {
-  background-color: #ffffff !important;
-}
+/* Alternating row colors + hover */
+.tabulator.bootstrap5 .tabulator-row.tabulator-row-odd { background-color: #ffffff !important; }
+.tabulator.bootstrap5 .tabulator-row.tabulator-row-even { background-color: #f8f9fa  !important; }
+.tabulator.bootstrap5 .tabulator-row:hover { background-color: var(--bs-primary-bg-subtle) !important; }
 
-.tabulator.bootstrap5 .tabulator-row.tabulator-row-even {
-  background-color: #f8f9fa !important;
-}
-
-.tabulator.bootstrap5 .tabulator-row:hover {
-  background-color: var(--bs-primary-bg-subtle) !important;
-}
-
-/* ========== 6) Tabulator: footer (pagination) blue + compact ========== */
+/* ---------------------------
+   Footer: blue + compact
+   --------------------------- */
 .tabulator.bootstrap5 .tabulator-footer {
   background-color: var(--bs-primary) !important;
   color: #fff !important;
-  border-top: 1px solid rgba(255, 255, 255, .25);
+  font-size: 0.85rem;        /* same as rows/header */
+  line-height: 1.3;
   padding: .25rem .5rem;
-  font-size: .80rem;
+  border-top: 1px solid rgba(255,255,255,0.25);
 }
 
-.tabulator.bootstrap5 .tabulator-footer .tabulator-label {
-  font-size: .80rem;
-  opacity: .95;
-}
-
-.tabulator.bootstrap5 .tabulator-footer .tabulator-pages {
-  gap: .25rem;
-}
-
+/* Make pagination buttons the SAME size as the Page Size select */
+.tabulator.bootstrap5 .tabulator-footer .tabulator-pages { gap: .25rem; }
 .tabulator.bootstrap5 .tabulator-footer .tabulator-page,
 .tabulator.bootstrap5 .tabulator-footer .tabulator-paginator button {
-  font-size: .80rem;
-  padding: .15rem .45rem;
+  font-size: 0.85rem;        /* match select */
   line-height: 1.2;
+  padding: .2rem .5rem;      /* match select padding */
+  height: calc(1.5em + .5rem);
   color: #fff;
   background: transparent;
   border: 1px solid rgba(255, 255, 255, .55);
   border-radius: .25rem;
 }
-
 .tabulator.bootstrap5 .tabulator-footer .tabulator-page.active {
   background: #fff;
   color: var(--bs-primary);
   border-color: #fff;
 }
-
 .tabulator.bootstrap5 .tabulator-footer .tabulator-page:hover,
 .tabulator.bootstrap5 .tabulator-footer .tabulator-paginator button:hover {
   background: rgba(255, 255, 255, .12);
 }
 
-.tabulator.bootstrap5 .tabulator-footer .tabulator-page:focus,
-.tabulator.bootstrap5 .tabulator-footer .tabulator-paginator button:focus {
-  outline: none;
-  box-shadow: 0 0 0 .15rem rgba(255, 255, 255, .25);
-}
-
-/* ===== 6.1) Pagination select FIX (readable options) ===== */
-.tabulator.bootstrap5 .tabulator-footer .tabulator-page-size {
-  font-size: .80rem;
-  padding: .2rem .5rem;
-  height: calc(1.5em + .5rem);
-  color: #212529 !important;
-  background-color: #fff !important;
-  border: 1px solid #ced4da !important;
-  border-radius: .25rem;
-}
-
-/* ========== 7) Optional: fallback HTML table (rarely used) ========== */
-table.simple-fallback {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-table.simple-fallback th,
-table.simple-fallback td {
-  border: 1px solid #e5e5e5;
-  padding: 6px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-table.simple-fallback th {
-  position: sticky;
-  top: 0;
-  background: #fafafa;
-}
-
-/* === TABULATOR H-SCROLL SUPPORT === */
-.tabulator.bootstrap5 .tabulator-tableholder {
-  overflow-x: auto !important;
-}
-
-#table.force-hscroll .tabulator-table {
-  min-width: max-content !important;
-}
-
+/* ---------------------------
+   Card body: let table fill
+   --------------------------- */
 .card-body {
   min-height: 0;
-  overflow-x: visible;
-  overflow-y: hidden;
-}
-
-/* Sticky header fix */
-.tabulator.bootstrap5 .tabulator-header {
-  position: sticky;
-  top: 0;
-  z-index: 3;
+  overflow-y: hidden;        /* Tabulator manages vertical scroll */
 }

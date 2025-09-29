@@ -2,121 +2,98 @@
 <html lang="en">
 
 <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>FortiAppSec Traffic Logs</title>
-    <link rel="icon" href="/static/favicon.ico">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FortiAppSec Traffic Logs</title>
+  <link rel="icon" href="/static/favicon.ico">
 
-    <!-- Tabulator + Bootstrap5 theme -->
-    <link href="https://unpkg.com/tabulator-tables@6.3.1/dist/css/tabulator_bootstrap5.min.css" rel="stylesheet">
-    <script src="https://unpkg.com/tabulator-tables@6.3.1/dist/js/tabulator.min.js" defer
-        onerror="window.__TABULATOR_FAILED__=true;"></script>
+  <!-- Tabulator + Bootstrap5 theme -->
+  <link href="https://unpkg.com/tabulator-tables@6.3.1/dist/css/tabulator_bootstrap5.min.css" rel="stylesheet">
+  <script src="https://unpkg.com/tabulator-tables@6.3.1/dist/js/tabulator.min.js" defer onerror="window.__TABULATOR_FAILED__=true;"></script>
 
-    <!-- Bootstrap -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js" defer></script>
+  <!-- Bootstrap -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js" defer></script>
 
-    <!-- Style CSS -->
-    <link href="/static/css/style.css" rel="stylesheet">
+  <!-- Bootstrap Icons (for small "x" in column headers) -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
 
-    <!-- App code (defer) -->
-    <script src="/static/js/app.js" defer></script>
+  <!-- Style CSS -->
+  <link href="/static/css/style.css" rel="stylesheet">
 
-
+  <!-- App code (defer) -->
+  <script src="/static/js/app.js" defer></script>
 </head>
 
 <body class="bg-light d-flex flex-column min-vh-100">
 
-    <!-- ===== COMPACT NAVBAR (small everywhere) ===== -->
-    <nav class="navbar bg-body-tertiary py-2 border-bottom">
-        <div class="container-fluid">
+  <!-- ===== NAVBAR ===== -->
+  <!-- py-1 to reduce overall navbar height -->
+  <nav class="navbar bg-body-tertiary py-1 border-bottom">
+    <div class="container-fluid">
 
-            <!-- ===== Line 1 ===== -->
-            <div class="d-flex w-100 align-items-center justify-content-between flex-wrap gap-2 mb-1">
-                <!-- Left: Title -->
-                <a class="navbar-brand py-0 m-0" href="#"><strong>FortiAppSec Traffic Logs</strong></a>
-
-                <!-- Right: rows / last load / reload -->
-                <div class="d-flex align-items-center gap-2">
-                    <span class="navbar-text small">
-                        <span class="badge text-bg-light border">Rows: <strong id="count">-</strong></span>
-                    </span>
-                    <span class="navbar-text small">
-                        <span class="badge text-bg-light border">Last load (UTC): <strong id="last">-</strong></span>
-                    </span>
-                    <button id="reloadBtn" class="badge text-bg-dark border-0">
-                        Reload from Azure
-                    </button>
-                </div>
-            </div>
-
-
-            <!-- ===== Line 2 ===== -->
-            <div class="d-flex w-100 align-items-center flex-wrap gap-2">
-                <!-- Left: 3 column buttons -->
-                <div class="d-flex align-items-center gap-2">
-                    <button id="openColPicker" class="btn btn-primary btn-sm">Columns…</button>
-                    <button id="btnDefaultView" class="btn btn-outline-primary btn-sm"
-                        title="Show default security view">Default View</button>
-                    <button id="btnAllColumns" class="btn btn-outline-primary btn-sm"
-                        title="Show all and reset order">All Columns View</button>
-                </div>
-
-                <!-- Center: quick filter (use mx-auto to center the block) -->
-                <form class="d-flex align-items-center gap-2 mx-auto" role="search" onsubmit="return false;">
-                    <input id="quickFilter" class="form-control form-control-sm" type="search"
-                        placeholder="Quick filter…" aria-label="Search" style="width:300px;">
-                    <button id="clearFilter" class="btn btn-primary btn-sm" type="button">Clear</button>
-                </form>
-
-                <!-- Right: export buttons -->
-                <div class="d-flex align-items-center gap-2 ms-auto">
-                    <a class="btn btn-outline-success btn-sm" href="/data.csv" target="_blank">Export CSV</a>
-                    <a class="btn btn-outline-success btn-sm" href="/data.json" target="_blank">Export JSON</a>
-                </div>
-            </div>
-
+      <!-- Line 1: Title + counters -->
+      <div class="d-flex w-100 align-items-center justify-content-between flex-wrap gap-2 mb-1">
+        <a class="navbar-brand py-0 m-0" href="#"><strong>FortiAppSec Traffic Logs</strong></a>
+        <div class="d-flex align-items-center gap-2">
+          <span class="navbar-text small">
+            <span class="badge text-bg-light border">Rows: <strong id="count">-</strong></span>
+          </span>
+          <span class="navbar-text small">
+            <span class="badge text-bg-light border">Last load (UTC): <strong id="last">-</strong></span>
+          </span>
+          <button id="reloadBtn" class="badge text-bg-dark border-0">Reload from Azure</button>
         </div>
-    </nav>
+      </div>
 
-
-    <!-- Error banner -->
-    <div id="errorBanner" class="alert alert-danger d-none rounded-0 mb-0" role="alert"></div>
-
-    <!-- Table area -->
-    <main class="flex-grow-1 d-flex flex-column">
-        <div class="container-fluid py-3 flex-grow-1">
-            <div id="tableCard" class="card shadow-sm rounded-3 h-100">
-                <div class="card-body p-2 d-flex flex-column">
-                    <!-- Tabulator fills the card-body -->
-                    <div id="table" class="tabulator bootstrap5 flex-grow-1"></div>
-                </div>
+      <!-- Line 2: Left (Columns) | Center (Quick Filter) | Right (Exports) -->
+      <!-- IMPORTANT: no justify-content-between here; we use three clusters with the center truly centered -->
+      <div class="d-flex w-100 align-items-center flex-wrap gap-2 mb-2">
+        <!-- Left cluster: Columns dropdown -->
+        <div class="dropdown">
+          <button id="openColDropdown" class="btn btn-primary btn-sm dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+            Columns
+          </button>
+          <div id="colDropdown" class="dropdown-menu p-2" style="min-width:280px;max-height:60vh;overflow:auto;">
+            <div class="d-flex gap-2 mb-2">
+              <button type="button" class="btn btn-outline-dark btn-sm" id="colAll">All</button>
+              <button type="button" class="btn btn-outline-dark btn-sm" id="colNone">None</button>
+              <button type="button" class="btn btn-outline-primary btn-sm" id="colDefault">Default</button>
             </div>
+            <div id="colList" class="d-flex flex-column gap-1 small"></div>
+          </div>
         </div>
-    </main>
 
-
-    <!-- ===== Columns Modal (small) ===== -->
-    <div class="modal fade" id="colPickerModal" tabindex="-1" aria-labelledby="colPickerTitle" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content">
-                <div class="modal-header py-2">
-                    <h6 class="modal-title" id="colPickerTitle">Columns</h6>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body py-2">
-                    <input id="colSearch" type="text" class="form-control form-control-sm mb-2"
-                        placeholder="Search columns...">
-                    <div id="colList" class="d-flex flex-column gap-1 small"></div>
-                </div>
-                <div class="modal-footer py-2">
-                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
-                </div>
-            </div>
+        <!-- Center cluster: true center thanks to flex-grow-1 + justify-content-center -->
+        <div class="flex-grow-1 d-flex justify-content-center">
+          <form class="d-flex align-items-center gap-2" role="search" onsubmit="return false;">
+            <input id="quickFilter" class="form-control form-control-sm" type="search" placeholder="Quick filter…" aria-label="Search" style="width:300px;">
+            <button id="clearFilter" class="btn btn-primary btn-sm" type="button">Clear</button>
+          </form>
         </div>
+
+        <!-- Right cluster: Exports -->
+        <div class="d-flex align-items-center gap-2">
+          <a class="btn btn-outline-dark btn-sm" href="/data.csv" target="_blank">Export CSV</a>
+          <a class="btn btn-outline-dark btn-sm" href="/data.json" target="_blank">Export JSON</a>
+        </div>
+      </div>
     </div>
+  </nav>
 
+  <!-- Error banner -->
+  <div id="errorBanner" class="alert alert-danger d-none rounded-0 mb-0" role="alert"></div>
 
+  <!-- Table area -->
+  <main class="flex-grow-1 d-flex flex-column">
+    <div class="container-fluid py-3 flex-grow-1">
+      <div id="tableCard" class="card shadow-sm rounded-3 h-100">
+        <!-- p-1 to reduce vertical padding in the card that contains the table -->
+        <div class="card-body p-1 d-flex flex-column">
+          <div id="table" class="tabulator bootstrap5 flex-grow-1"></div>
+        </div>
+      </div>
+    </div>
+  </main>
 </body>
-
 </html>
