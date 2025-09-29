@@ -9,7 +9,8 @@
 
   <!-- Tabulator + Bootstrap5 theme -->
   <link href="https://unpkg.com/tabulator-tables@6.3.1/dist/css/tabulator_bootstrap5.min.css" rel="stylesheet">
-  <script src="https://unpkg.com/tabulator-tables@6.3.1/dist/js/tabulator.min.js" defer onerror="window.__TABULATOR_FAILED__=true;"></script>
+  <script src="https://unpkg.com/tabulator-tables@6.3.1/dist/js/tabulator.min.js" defer
+    onerror="window.__TABULATOR_FAILED__=true;"></script>
 
   <!-- Bootstrap -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -24,6 +25,101 @@
   <!-- App code (defer) -->
   <script src="/static/js/app.js" defer></script>
 </head>
+
+
+<!-- ================== POP-UP CONFIG (Modal) ================== -->
+<div class="modal fade" id="configModal" tabindex="-1" aria-labelledby="configModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <h6 class="modal-title" id="configModalLabel">Azure blob configuration</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" id="btnCfgXClose"></button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Timezone -->
+        <div class="mb-3">
+          <label for="cfgTimezone" class="form-label small">Timezone (IANA)</label>
+          <select id="cfgTimezone" class="form-select form-select-sm"></select>
+          <div class="form-text">Used to render timestamps in the table.</div>
+        </div>
+
+        <!-- Storage Account Name -->
+        <div class="mb-3">
+          <label for="cfgAccount" class="form-label small">Storage Account Name</label>
+          <input id="cfgAccount" class="form-control form-control-sm" type="text" autocomplete="off" />
+        </div>
+
+        <!-- Account Access Key (hidden) -->
+        <div class="mb-3">
+          <label for="cfgKey" class="form-label small">Account Access Key</label>
+          <input id="cfgKey" class="form-control form-control-sm" type="password" autocomplete="new-password" />
+        </div>
+
+        <!-- Container Name -->
+        <div class="mb-3">
+          <label for="cfgContainer" class="form-label small">Container Name</label>
+          <input id="cfgContainer" class="form-control form-control-sm" type="text" autocomplete="off" />
+        </div>
+
+        <!-- Fetch controls -->
+        <div class="mb-3">
+          <label for="cfgFetchRange" class="form-label small">Fetch Range</label>
+          <select id="cfgFetchRange" class="form-select form-select-sm">
+            <option value="unlimited">Unlimited</option>
+            <option value="last_hour">Last hour</option>
+            <option value="last_day">Last 24 hours</option>
+            <option value="last_week">Last 7 days</option>
+            <option value="last_month">Last 30 days</option>
+            <option value="custom">Custom (UTC range)</option>
+          </select>
+
+          <div id="customRangeRow" class="row g-2 mt-1" style="display:none;">
+            <div class="col-6">
+              <label for="cfgStartUtc" class="form-label small">Start (UTC)</label>
+              <input id="cfgStartUtc" type="datetime-local" class="form-control form-control-sm" />
+            </div>
+            <div class="col-6">
+              <label for="cfgEndUtc" class="form-label small">End (UTC)</label>
+              <input id="cfgEndUtc" type="datetime-local" class="form-control form-control-sm" />
+            </div>
+          </div>
+        </div>
+
+        <div class="mb-2">
+          <label for="cfgMaxBlobs" class="form-label small">Max blobs (0 = unlimited)</label>
+          <input id="cfgMaxBlobs" class="form-control form-control-sm" type="number" min="0" step="1" value="0" />
+        </div>
+
+        <!-- Save Message -->
+        <div class="alert alert-warning py-2 small mb-0">
+          Saving writes to <code>config.json</code> (active). <em>Default</em> restores from
+          <code>config.default.json</code>.
+        </div>
+
+        <!-- Test Result -->
+        <div id="cfgAlert" class="mt-2"></div>
+
+      </div>
+
+
+
+      <div class="modal-footer py-2">
+        <!-- Required actions -->
+        <button id="btnCfgDefault" type="button" class="btn btn-outline-secondary btn-sm">Default</button>
+        <button id="btnCfgTest" type="button" class="btn btn-outline-info btn-sm">Test</button>
+        <button id="btnCfgSave" type="button" class="btn btn-primary btn-sm">Save</button>
+        <button type="button" class="btn btn-light btn-sm" data-bs-dismiss="modal" id="btnCfgClose">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+
+
+
+
 
 <body class="bg-light d-flex flex-column min-vh-100">
 
@@ -51,7 +147,8 @@
       <div class="d-flex w-100 align-items-center flex-wrap gap-2 mb-2">
         <!-- Left cluster: Columns dropdown -->
         <div class="dropdown">
-          <button id="openColDropdown" class="btn btn-primary btn-sm dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+          <button id="openColDropdown" class="btn btn-primary btn-sm dropdown-toggle" data-bs-toggle="dropdown"
+            data-bs-auto-close="outside">
             Columns
           </button>
           <div id="colDropdown" class="dropdown-menu p-2" style="min-width:280px;max-height:60vh;overflow:auto;">
@@ -67,16 +164,29 @@
         <!-- Center cluster: true center thanks to flex-grow-1 + justify-content-center -->
         <div class="flex-grow-1 d-flex justify-content-center">
           <form class="d-flex align-items-center gap-2" role="search" onsubmit="return false;">
-            <input id="quickFilter" class="form-control form-control-sm" type="search" placeholder="Quick filter…" aria-label="Search" style="width:300px;">
+            <input id="quickFilter" class="form-control form-control-sm" type="search" placeholder="Quick filter…"
+              aria-label="Search" style="width:300px;">
             <button id="clearFilter" class="btn btn-primary btn-sm" type="button">Clear</button>
           </form>
         </div>
 
-        <!-- Right cluster: Exports -->
-        <div class="d-flex align-items-center gap-2">
+
+
+        <!-- Export buttons + Config -->
+        <div class="d-flex align-items-center gap-2 ms-auto">
           <a class="btn btn-outline-dark btn-sm" href="/data.csv" target="_blank">Export CSV</a>
           <a class="btn btn-outline-dark btn-sm" href="/data.json" target="_blank">Export JSON</a>
+
+          <!-- New: Config button opens the modal -->
+          <button id="btnOpenConfig" class="btn btn-outline-primary btn-sm" type="button" data-bs-toggle="modal"
+            data-bs-target="#configModal">
+            Config
+          </button>
         </div>
+
+
+
+
       </div>
     </div>
   </nav>
@@ -96,4 +206,5 @@
     </div>
   </main>
 </body>
+
 </html>

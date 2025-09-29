@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Change into the script's directory
+# Go to repo root
 cd "$(dirname "$0")"
 
 # Python venv (optional but recommended)
@@ -11,13 +11,18 @@ fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
 
-# Install deps
+# Deps
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Ensure output dir exists
-rm -Rf out
+# Clean outputs
+rm -rf out
 mkdir -p out
 
-# Start the app (reads .env)
+# Clean ALL configs so app boots from .env
+rm -f config.json config.default.json
+rm -f config.json.bak-* || true
+rm -f *.json.bak-* || true
+
+# Start app (will bootstrap from .env)
 python3 app.py

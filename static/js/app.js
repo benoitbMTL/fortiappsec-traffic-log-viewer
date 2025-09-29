@@ -135,23 +135,23 @@ function colTitleWithClose(cell, formatterParams, onRendered) {
 
 /* === BUILD COLUMN DEFINITIONS === */
 function makeColumns(keys, colPrefs) {
-    return keys.map(k => {
-        const col = {
-            title: k,
-            field: k,
-            headerFilter: "input",
-            resizable: true,
-            visible: colPrefs[k] !== false,
-            widthGrow: 1,
-            titleFormatter: colTitleWithClose
-        };
-        if (k === "log_timestamp") {
-            col.title = "log_timestamp (ET)";
-            col.formatter = epochToEt;
-            col.headerTooltip = "Original field is epoch seconds; rendered as Eastern Time";
-        }
-        return col;
-    });
+  return keys.map(k => {
+    const col = {
+      title: k,
+      field: k,
+      headerFilter: "input",
+      resizable: true,
+      visible: colPrefs[k] !== false,
+      widthGrow: 1,
+      titleFormatter: colTitleWithClose
+    };
+    if (k === "log_timestamp") {
+      col.title = "log_timestamp (ET)";
+      col.formatter = epochToEt;
+      col.headerTooltip = "Original field is epoch seconds; rendered as Eastern Time";
+    }
+    return col;
+  });
 }
 
 
@@ -509,6 +509,264 @@ function wireButtons() {
     };
   }
 }
+
+
+
+
+
+/* ============================================================
+   CONFIG FRONTEND (with heavy console debugging)
+   - Loads active config (config.json) from backend
+   - Auto-opens modal if config is missing (first run, no .env & no config.json)
+   - Save writes config.json (active); Default restores from config.default.json
+   - Test validates Azure access without saving
+   - Timezone is used by epochToEt for log rendering
+   ============================================================ */
+
+let APP_CONFIG = {
+  timezone: "UTC",
+  AZURE_STORAGE_ACCOUNT: "",
+  AZURE_STORAGE_KEY: "",
+  AZURE_CONTAINER: "",
+  fetch_range: "unlimited", // unlimited | last_hour | last_day | custom
+  start_utc: "",            // when fetch_range = custom (ISO-like: "YYYY-MM-DDTHH:mm")
+  end_utc: "",
+  max_blobs: 0              // 0 = unlimited
+};
+
+// ---------- Utilities ----------
+function dbg(...args) { try { console.debug("[CONFIG]", ...args); } catch { } }
+function dgw(...args) { try { console.warn("[CONFIG]", ...args); } catch { } }
+function dge(...args) { try { console.error("[CONFIG]", ...args); } catch { } }
+
+// Populate timezone <select> using browser's IANA list if available
+function populateTimezoneSelect() {
+  const sel = document.getElementById("cfgTimezone");
+  if (!sel) { dgw("populateTimezoneSelect() no select"); return; }
+  sel.innerHTML = "";
+  let tzList = [];
+  if (typeof Intl !== "undefined" && Intl.supportedValuesOf) {
+    try { tzList = Intl.supportedValuesOf("timeZone"); } catch { }
+  }
+  if (tzList.length === 0) {
+    tzList = ["UTC", "America/Toronto", "America/New_York", "Europe/Paris", "Europe/London", "Asia/Tokyo", "Australia/Sydney"];
+    dgw("Intl.supportedValuesOf not available; using short fallback list");
+  }
+  tzList.forEach(tz => {
+    const opt = document.createElement("option");
+    opt.value = tz; opt.textContent = tz;
+    sel.appendChild(opt);
+  });
+  dbg("populateTimezoneSelect done:", tzList.length, "items");
+}
+
+// sentinel used to show dots but avoid overwriting unless user changes it
+const KEY_SENTINEL = "********";
+
+// Apply config values to modal inputs
+function fillModalFromConfig(cfg) {
+  dbg("fillModalFromConfig", cfg);
+  document.getElementById("cfgTimezone").value = cfg.timezone || "UTC";
+  document.getElementById("cfgAccount").value = cfg.AZURE_STORAGE_ACCOUNT || "";
+  document.getElementById("cfgContainer").value = cfg.AZURE_CONTAINER || "";
+  document.getElementById("cfgFetchRange").value = cfg.fetch_range || "last_day";
+  document.getElementById("cfgMaxBlobs").value = Number.isFinite(cfg.max_blobs) ? cfg.max_blobs : 5000;
+
+  // show dots if a key is present server-side (we don't fetch it)
+  const hasKey = !!cfg.AZURE_STORAGE_KEY; // backend can optionally include boolean or omit; safe fallback
+  document.getElementById("cfgKey").value = hasKey ? KEY_SENTINEL : "";
+
+  const isCustom = (cfg.fetch_range === "custom");
+  document.getElementById("customRangeRow").style.display = isCustom ? "" : "none";
+  document.getElementById("cfgStartUtc").value = cfg.start_utc || "";
+  document.getElementById("cfgEndUtc").value = cfg.end_utc || "";
+}
+
+
+// Read modal inputs into an object (keeping empty key = “no change”)
+function readModalToPayload() {
+  const keyInput = document.getElementById("cfgKey").value;
+  const payload = {
+    timezone: document.getElementById("cfgTimezone").value,
+    AZURE_STORAGE_ACCOUNT: document.getElementById("cfgAccount").value,
+    // Only send the key if user typed a new value (not sentinel, not empty)
+    AZURE_STORAGE_KEY: (keyInput && keyInput !== KEY_SENTINEL) ? keyInput : "",
+    AZURE_CONTAINER: document.getElementById("cfgContainer").value,
+    fetch_range: document.getElementById("cfgFetchRange").value,
+    max_blobs: parseInt(document.getElementById("cfgMaxBlobs").value || "0", 10),
+    start_utc: document.getElementById("cfgStartUtc").value,
+    end_utc: document.getElementById("cfgEndUtc").value
+  };
+  dbg("readModalToPayload", payload);
+  return payload;
+}
+
+// ---------- Backend calls ----------
+async function fetchConfigState() {
+  try {
+    const res = await fetch("/config/state");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const state = await res.json(); // { needs_config: bool, config: {...} }
+    dbg("fetchConfigState", state);
+    if (state.config) APP_CONFIG = state.config;
+    return state;
+  } catch (e) {
+    dge("fetchConfigState failed:", e);
+    return { needs_config: false, config: APP_CONFIG };
+  }
+}
+
+async function getConfig() {
+  try {
+    const res = await fetch("/config");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const cfg = await res.json();
+    dbg("getConfig", cfg);
+    APP_CONFIG = cfg;
+    return cfg;
+  } catch (e) {
+    dge("getConfig failed:", e);
+    return APP_CONFIG;
+  }
+}
+
+async function saveConfig() {
+  const body = readModalToPayload();
+  try {
+    const res = await fetch("/config", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const saved = await res.json();
+    dbg("saveConfig OK:", saved);
+    APP_CONFIG = saved;
+    if (window.table) table.redraw(true); // timezone affects rendering
+  } catch (e) {
+    dge("saveConfig failed:", e);
+  }
+}
+
+async function resetConfigToDefault() {
+  try {
+    const res = await fetch("/config/default", { method: "POST" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const def = await res.json();
+    dbg("resetConfigToDefault OK:", def);
+    APP_CONFIG = def;
+    fillModalFromConfig(APP_CONFIG);
+    if (window.table) table.redraw(true);
+  } catch (e) {
+    dge("resetConfigToDefault failed:", e);
+  }
+}
+
+async function testConfig() {
+  const body = readModalToPayload(); // do not save
+  try {
+    const res = await fetch("/config/test", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+    });
+
+    const text = await res.text();
+    dbg("testConfig response:", res.status, text);
+
+    if (res.ok) {
+      showAlert("success", text || "Test OK.");
+    } else {
+      showAlert("danger", text || `Test failed with HTTP ${res.status}.`);
+    }
+  } catch (e) {
+    dge("testConfig failed:", e);
+    showAlert("danger", "Test failed. See console for details.");
+  }
+}
+
+// ---------- UI wiring ----------
+document.addEventListener("DOMContentLoaded", async () => {
+  dbg("DOMContentLoaded → config init");
+  populateTimezoneSelect();
+
+  // Fetch state (auto-open modal if needed)
+  try {
+    const state = await fetchConfigState();
+    if (state.needs_config) {
+      dbg("No config detected → auto-open Config modal");
+      const modalEl = document.getElementById("configModal");
+      const modal = new bootstrap.Modal(modalEl);
+      fillModalFromConfig(state.config || APP_CONFIG);
+      modal.show();
+    } else {
+      fillModalFromConfig(state.config || APP_CONFIG);
+    }
+  } catch (e) {
+    dge("Initial config state failed:", e);
+  }
+
+  // Toggle custom range row visibility
+  const fetchRangeSel = document.getElementById("cfgFetchRange");
+  fetchRangeSel?.addEventListener("change", () => {
+    const show = (fetchRangeSel.value === "custom");
+    document.getElementById("customRangeRow").style.display = show ? "" : "none";
+    dbg("Fetch range changed:", fetchRangeSel.value);
+  });
+
+  // Buttons
+  document.getElementById("btnCfgSave")?.addEventListener("click", saveConfig);
+  document.getElementById("btnCfgDefault")?.addEventListener("click", resetConfigToDefault);
+  document.getElementById("btnCfgTest")?.addEventListener("click", testConfig);
+  document.getElementById("btnCfgClose")?.addEventListener("click", () => dbg("Config modal closed via footer"));
+  document.getElementById("btnCfgXClose")?.addEventListener("click", () => dbg("Config modal closed via X"));
+});
+
+// ---------- Time formatter uses configured timezone ----------
+function epochToEt(cell) {
+  const v = cell.getValue();
+  if (v === null || v === undefined || v === "") return "";
+  const num = Number(v);
+  if (Number.isNaN(num)) return String(v);
+
+  const ms = num < 1e12 ? num * 1000 : num;
+  const d = new Date(ms);
+
+  const tz = (APP_CONFIG && APP_CONFIG.timezone) ? APP_CONFIG.timezone : "UTC";
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false, timeZone: tz
+  });
+
+  const parts = fmt.format(d).split(/[\/, :]/);  // [mm, dd, yyyy, hh, mm, ss]
+  const out = `${parts[2]}-${parts[0]}-${parts[1]} ${parts[3]}:${parts[4]}:${parts[5]} ${tz}`;
+  console.debug("[epochToEt]", { in: v, ms, tz, out });
+  return out;
+}
+
+
+
+
+function showAlert(kind /* 'success' | 'danger' | 'warning' | 'info' */, message) {
+  const host = document.getElementById("cfgAlert");
+  if (!host) { console.warn("[Alert] #cfgAlert missing"); return; }
+  host.innerHTML = "";
+
+  // NOTE: pas de 'alert-dismissible' ici
+  const div = document.createElement("div");
+  div.className = `alert alert-${kind} fade show py-2 mb-0`;
+  div.setAttribute("role", "alert");
+  div.innerHTML = `
+    <div class="d-flex align-items-center">
+      <div class="small flex-grow-1">${message}</div>
+      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+  `;
+  host.appendChild(div);
+}
+
+
+
+
+
+
 
 /* === KICK OFF === */
 init();
