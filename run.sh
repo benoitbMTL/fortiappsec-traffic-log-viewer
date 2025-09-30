@@ -12,43 +12,60 @@ cd "$(dirname "$0")"
 # ---------- Ensure Debian/Ubuntu ----------
 have apt-get || err "This script supports Debian/Ubuntu only (apt-get required)."
 
-# ---------- Detect Python version (major.minor) ----------
-PYMM="$(python3 -c 'import sys; print(f\"{sys.version_info[0]}.{sys.version_info[1]}\")' 2>/dev/null || echo '')"
-[ -n "$PYMM" ] || err "python3 not found. Please install Python 3 first."
+# ---------- Select Python binary ----------
+PYBIN="${PYBIN:-python3}"
+have "$PYBIN" || err "python3 not found in PATH. Install Python 3 or set PYBIN=/path/to/python3."
+
+# Robustly get major.minor (e.g. 3.12) without failing the script
+PYMM="$("$PYBIN" -V 2>&1 | awk '{print $2}' | cut -d. -f1,2 || true)"
+[ -n "$PYMM" ] || err "Unable to detect Python version (major.minor). Example: 3.12"
+
+echo "Using Python: $("$PYBIN" -V 2>&1)"
 
 # ---------- Install required packages ----------
-TO_INSTALL=(python3-pip python3-venv "python${PYMM}-venv")
-if ! have pip3; then TO_INSTALL=(python3-pip "${TO_INSTALL[@]}"); fi
-
-echo "Ensuring packages: ${TO_INSTALL[*]}"
+PKGS=(python3-pip python3-venv "python${PYMM}-venv")
 SUDO=""; need_sudo && SUDO="sudo"
-$SUDO apt-get update -y
-$SUDO apt-get install -y "${TO_INSTALL[@]}" || true
 
-# ---------- Create or repair a virtualenv ----------
-# If a previous .venv exists but is incomplete, remove it
+echo "Ensuring packages: ${PKGS[*]}"
+$SUDO apt-get update -y
+# Try installing all; ignore non-existent versioned venv package gracefully
+$SUDO apt-get install -y "${PKGS[@]}" || true
+
+# ---------- Create or repair virtual environment ----------
+# Clean incomplete .venv if present
 if [ -d ".venv" ] && [ ! -f ".venv/bin/activate" ]; then
   rm -rf .venv
 fi
 
-# First try with built-in venv
+create_with_venv() {
+  # Try the stdlib venv first
+  "$PYBIN" -m venv .venv
+}
+
+create_with_virtualenv() {
+  # Fallback that does not rely on ensurepip in the base Python
+  "$PYBIN" -m pip install --user --upgrade virtualenv
+  "$PYBIN" -m virtualenv .venv
+}
+
 if [ ! -f ".venv/bin/activate" ]; then
-  if ! python3 -m venv .venv 2>/tmp/venv.err; then
+  # Some minimal images need BOTH python3-venv and pythonX.Y-venv
+  # Try stdlib venv; if it fails (ensurepip missing), fall back to virtualenv
+  if ! create_with_venv 2>/tmp/venv.err; then
     echo "WARNING: python -m venv failed. Falling back to virtualenv."
-    # Fallback: use virtualenv (does not rely on ensurepip)
-    python3 -m pip install --user --upgrade virtualenv
-    python3 -m virtualenv .venv || {
+    if ! create_with_virtualenv 2>>/tmp/venv.err; then
+      echo "---------- venv error log ----------" >&2
       cat /tmp/venv.err >&2 || true
-      err "Both venv and virtualenv creation failed."
-    }
+      err "Both 'venv' and 'virtualenv' creation failed."
+    fi
   fi
 fi
 
 # shellcheck disable=SC1091
-source .venv/bin/activate
+source .venv/bin/activate || err "Failed to activate virtual environment."
 python -m pip --version >/dev/null 2>&1 || err "pip is not available inside the virtual environment."
 
-# ---------- Dependencies ----------
+# ---------- Install dependencies ----------
 python -m pip install --upgrade pip
 if [ -f requirements.txt ]; then
   python -m pip install -r requirements.txt
