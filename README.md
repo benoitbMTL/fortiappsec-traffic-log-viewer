@@ -144,7 +144,7 @@ echo "Container Name: $CONTAINER_NAME"
 Clone the repo:
 ```bash
 git clone https://github.com/benoitbMTL/fortiappsec-traffic-log-viewer.git
-cd fortiappsec-traffic-logs-viewer
+cd fortiappsec-traffic-log-viewer
 ```
 
 ---
