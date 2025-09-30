@@ -1,8 +1,8 @@
 # ---------------------------------------
 # FortiAppSec Traffic Logs Viewer
-# Python 3.14 + Gunicorn
+# Python 3.12 + Gunicorn
 # ---------------------------------------
-FROM python:3.14-slim
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
