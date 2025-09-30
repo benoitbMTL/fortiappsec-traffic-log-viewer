@@ -181,7 +181,7 @@ def load_logs_from_blob(cfg: Dict[str, Any]):
     max_blobs = int(cfg.get("max_blobs") or 0)
 
     if not account or not key or not container:
-        raise SystemExit("Missing AZURE_STORAGE_ACCOUNT / AZURE_STORAGE_KEY / AZURE_CONTAINER configuration")
+        raise RuntimeError("Missing AZURE_STORAGE_ACCOUNT / AZURE_STORAGE_KEY / AZURE_CONTAINER configuration")
 
     account_url = _account_url(account)
     app.logger.info("Loading blobs: account=%s container=%s", account, container)
@@ -244,10 +244,12 @@ def load_logs_from_blob(cfg: Dict[str, Any]):
     return df
 
 def ensure_loaded():
-    """Load DataFrame cache and timestamp on first access (uses active config)."""
     global DF_CACHE, LAST_LOAD_UTC
     if DF_CACHE is None:
         cfg = read_config()
+        if not (cfg.get("AZURE_STORAGE_ACCOUNT") and cfg.get("AZURE_STORAGE_KEY") and cfg.get("AZURE_CONTAINER")):
+            app.logger.warning("Config incomplete; skipping initial load")
+            return
         DF_CACHE = load_logs_from_blob(cfg)
         LAST_LOAD_UTC = datetime.now(timezone.utc)
         app.logger.info("Initial load complete: rows=%d", 0 if DF_CACHE is None else len(DF_CACHE))
@@ -331,9 +333,7 @@ def humanize_utc(dt_utc: Optional[datetime]) -> str:
 def index():
     """
     Render index.html from the project root (template_folder=".").
-    Fixes GET / 404 when index.html was not under /static or /templates by default.
     """
-    ensure_loaded()  # keep behavior from legacy app: warm cache early
     return render_template("index.html")
 
 # --- Config state (auto-open modal on first run) ---
@@ -428,6 +428,19 @@ def data():
       - optional debug block in server logs (toggle PY_DEBUG)
     Applies fetch_range and max_blobs on the *records* returned to the UI.
     """
+    try:
+        ensure_loaded()
+    except Exception as e:
+        app.logger.error(f"Azure connection failed: {e}")
+        return jsonify({
+            "records": [],
+            "columns": [],
+            "total": 0,
+            "last_load_utc": "n/a",
+            "last_load_human": "n/a",
+            "error": "Unable to connect to Azure Blob Storage. Please check your configuration."
+        }), 200
+        
     ensure_loaded()
 
     cfg = read_config()
@@ -560,9 +573,10 @@ if __name__ == "__main__":
     cfg = read_config()
     port = int(cfg.get("PORT") or os.getenv("PORT", "8000"))
     app.logger.info("Starting server on http://0.0.0.0:%s", port)
-    # Warm cache on boot (optional)
+    # Warm cache on boot (optional, must never kill the process)
     try:
         ensure_loaded()
-    except Exception as e:
+    except BaseException as e:  # catch SystemExit too
         app.logger.warning("Initial load failed (will attempt on first request): %s", e)
     app.run(host="0.0.0.0", port=port, debug=False)
+

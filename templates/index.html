@@ -46,9 +46,12 @@
         <!-- Timezone -->
         <div class="mb-3">
           <label for="cfgTimezone" class="form-label small">Timezone (IANA)</label>
-          <select id="cfgTimezone" class="form-select form-select-sm"></select>
+          <input id="cfgTimezone" class="form-control form-control-sm" type="text" list="tzList"
+            placeholder="Type to search…">
+          <datalist id="tzList"></datalist>
           <div class="form-text">Used to render timestamps in the table.</div>
         </div>
+
 
         <!-- Storage Account Name -->
         <div class="mb-3">
@@ -93,14 +96,8 @@
         </div>
 
         <div class="mb-2">
-          <label for="cfgMaxBlobs" class="form-label small">Max blobs (0 = unlimited)</label>
+          <label for="cfgMaxBlobs" class="form-label small">Max Rows (0 = unlimited)</label>
           <input id="cfgMaxBlobs" class="form-control form-control-sm" type="number" min="0" step="1" value="0" />
-        </div>
-
-        <!-- Save Message -->
-        <div class="alert alert-warning py-2 small mb-0">
-          Saving writes to <code>config.json</code> (active). <em>Default</em> restores from
-          <code>config.default.json</code>.
         </div>
 
         <!-- Test Result -->
@@ -112,8 +109,8 @@
 
       <div class="modal-footer py-2">
         <!-- Required actions -->
-        <button id="btnCfgDefault" type="button" class="btn btn-outline-secondary btn-sm">Default</button>
-        <button id="btnCfgTest" type="button" class="btn btn-outline-info btn-sm">Test</button>
+        <button id="btnCfgDefault" type="button" class="btn btn-outline-primary btn-sm">Default</button>
+        <button id="btnCfgTest" type="button" class="btn btn-success btn-sm">Test</button>
         <button id="btnCfgSave" type="button" class="btn btn-primary btn-sm">Save</button>
         <button type="button" class="btn btn-light btn-sm" data-bs-dismiss="modal" id="btnCfgClose">Close</button>
       </div>

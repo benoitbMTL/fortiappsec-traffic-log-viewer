@@ -8,7 +8,6 @@ cd "$(dirname "$0")"
 if [ ! -d ".venv" ]; then
   python3 -m venv .venv
 fi
-# shellcheck disable=SC1091
 source .venv/bin/activate
 
 # Deps
@@ -24,5 +23,5 @@ rm -f config.json config.default.json
 rm -f config.json.bak-* || true
 rm -f *.json.bak-* || true
 
-# Start app (will bootstrap from .env)
+# Start app
 python3 app.py

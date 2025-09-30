@@ -1,84 +1,178 @@
-# FortiAppSec Traffic Logs Viewer (Azure Blob → Flask + Tabulator)
+# FortiAppSec Traffic Logs Viewer
 
-A compact web UI to browse **FortiAppSec traffic logs** exported to **Azure Blob Storage**.  
-The backend (Flask) **downloads NDJSON log lines directly from Azure using values in `.env`**, merges them in-memory with **pandas**, and serves a fast table UI with **Tabulator + Bootstrap 5**. 
+A compact web UI to browse **FortiAppSec Cloud traffic logs** exported in **Azure Blob Storage**.  
+
+![FortiAppSec Traffic Logs Viewer](images/app-screenshot.png)
 
 ---
 
 ## ✨ Features
-- Pulls **NDJSON** traffic logs from an **Azure Blob** container (all `.txt` blobs).
-- In-memory merge (pandas) with optional CSV/Parquet snapshots in `./out/`.
-- Blue Bootstrap 5 theme, compact UI, small header filters.
-- **Default View** (no horizontal scroll), **All Columns View** (auto horizontal scroll).
-- Column picker modal (show/hide), reorder, resize, quick global filter.
-- Download CSV/JSON, and **Reload from Azure** on demand.
+- Log viewer with quick filters and header filters  
+- Column picker (show/hide any field)  
+- Download logs in **CSV/JSON** format  
+- Configure parameters via **.env file** or the **GUI**  
 
 ---
 
-## 📋 Prerequisites
-- Azure Storage account & container where **FortiAppSec Traffic Logs** are exported (see step-by-step below).
-- Docker (recommended), or Python 3.11+ locally.
-- Outbound network allowed to: `unpkg.com` (Tabulator), `cdn.jsdelivr.net` (Bootstrap). If blocked, the app still serves CSV/JSON, but the rich UI won’t load.
+## 📋 Configuration Steps
+1. Create an **Azure Storage Account & Container** where **FortiAppSec Cloud Traffic Logs** are exported.  
+2. Configure **FortiAppSec Cloud** to export traffic logs to Azure.  
+3. Run the app (Docker or Python).  
 
 ---
 
 ## 🧭 Step-by-step Setup
 
-### 1) Configure Azure Storage (one-time)
-1. In the **Azure Portal**: create or pick a **Storage Account**.
-2. Go to **Access keys** and copy an **Account Access Key** (or generate a **SAS** with read/write for blobs and a short expiry).
-3. Under **Containers**, create (or reuse) a container (e.g., `traffic-log`). Note the **container name**.
+### 1) Create Azure Storage Account & Container
 
-> References:  
-> - Azure Blob Storage overview: https://learn.microsoft.com/azure/storage/blobs/storage-blobs-overview  
-> - Python SDK quickstart: https://learn.microsoft.com/azure/storage/blobs/storage-quickstart-blobs-python
+Open your browser and sign in to [Azure Portal](https://portal.azure.com/).  
+Click the **Cloud Shell** button in the top-right corner.  
 
-### 2) Configure FortiAppSec Cloud to export Traffic Logs → Azure Blob
-1. In the FortiAppSec Cloud Portal, open **Log Settings**.
-2. Enable **Traffic Log Export**.
-3. For **Server Type**, select **Azure Blob**.
-4. Fill the fields:
-   - **Storage Account Name** → your storage account (e.g., `mystorageacct`)
-   - **Account Access Key** → the key copied in step 1 (or use a SAS)
-   - **Container Name** → the target container (e.g., `traffic-log`)
-5. Save.
-6. Notes from the product docs:
-   - Traffic log timestamps are **recorded in UTC**. The portal may show local time while the exported files remain UTC.
-   - Export is **near real time**; this app reads NDJSON lines as they land in the container.
+![Cloud Shell](images/cloud-shell.png)
 
-*(Add your screenshots here.)*
+Run the following commands (adapt the names and IPs as needed):
 
-### 3) Clone this repository
 ```bash
-git clone https://github.com/<your-org-or-user>/fortiappsec-traffic-log-viewer.git
-cd fortiappsec-traffic-log-viewer
+# Define the Resource Group name
+export RESOURCE_GROUP_NAME="rg-fortiappsec-logs"
+
+# Define the Azure region
+export REGION="canadaeast"
+
+# Define the Storage Account name (must be globally unique)
+# Add random characters at the end to avoid conflicts
+export STORAGE_ACCOUNT_NAME="stfortiappsec$(openssl rand -hex 3 | tr -d '\n' | cut -c1-6)"
+
+# Define the Container name for storing FortiAppSec WAF logs
+export CONTAINER_NAME="fortiappsec-traffic-logs"
+
+# Define the list of authorized IP addresses (FortiAppSec Cloud Management + Log exporters + App location)
+# https://docs.fortinet.com/document/fortiappsec-cloud/latest/user-guide/681595/log-settings
+export FORTIAPPSEC_IPS=(
+  "3.226.2.163"      # FortiAppSec Cloud Management
+  "3.123.68.65"      # FortiAppSec Cloud Management
+  "52.60.181.20"     # AWS Canada Central (Montreal)
+  "52.237.13.214"    # Azure Canada Central (Toronto)
+  "70.53.241.58"     # FortiAppSec Cloud Log Viewer Application
+)
+
+# Create a Resource Group in the selected region
+az group create \
+  --name $RESOURCE_GROUP_NAME \
+  --location $REGION
+
+# Create a Storage Account (must be unique across all Azure)
+az storage account create \
+  --name $STORAGE_ACCOUNT_NAME \
+  --resource-group $RESOURCE_GROUP_NAME \
+  --location $REGION \
+  --sku Standard_LRS \
+  --kind StorageV2 \
+  --https-only true
+
+# Create a Blob container inside the Storage Account
+az storage container create \
+  --name $CONTAINER_NAME \
+  --account-name $STORAGE_ACCOUNT_NAME
+
+# Disable default network access (deny all by default)
+az storage account update \
+  --name $STORAGE_ACCOUNT_NAME \
+  --resource-group $RESOURCE_GROUP_NAME \
+  --default-action Deny
+
+# Loop through the FORTIAPPSEC_IPS list and add each IP to the firewall rules
+for ip in "${FORTIAPPSEC_IPS[@]}"; do
+  az storage account network-rule add \
+    --resource-group $RESOURCE_GROUP_NAME \
+    --account-name $STORAGE_ACCOUNT_NAME \
+    --ip-address $ip
+done
+
+# Get the primary access key of the Storage Account
+ACCESS_KEY=$(az storage account keys list \
+  --resource-group $RESOURCE_GROUP_NAME \
+  --account-name $STORAGE_ACCOUNT_NAME \
+  --query '[0].value' \
+  --output tsv)
+
+# Display the required values for FortiAppSec Cloud configuration
+echo "---------------------------------------------"
+echo "Storage Account Name: $STORAGE_ACCOUNT_NAME"
+echo "Account Access Key: $ACCESS_KEY"
+echo "Container Name: $CONTAINER_NAME"
 ```
 
-### 4) Create & fill `.env`
-We provide `.env.example`. Copy and edit it:
+![Azure Commands](images/azure-commands.png)
 
+---
+
+### 2) Configure FortiAppSec Cloud → Azure Blob
+
+1. In the **FortiAppSec Cloud Portal**, go to:  
+   **WAF menu > Applications > Your Application > Log Settings**.  
+
+![Log Settings](images/log-settings.png)  
+
+2. Enable **Traffic Log Export** and select **Azure Blob**.  
+
+![Enable Log Export](images/enable-log-export.png)  
+
+3. Fill the fields:  
+   - **Storage Account Name** → your Azure storage account (e.g., `stfortiappsec`)  
+   - **Account Access Key** → the key copied earlier  
+   - **Container Name** → the container name (e.g., `fortiappsec-traffic-logs`)  
+
+4. Click **Test**.  
+
+5. Save if successful.  
+
+![Test & Save Config](images/test-save.png)  
+
+7. Notes:  
+   - Traffic log timestamps are **recorded in UTC**. This log viewer app lets you set a timezone to display logs in your local time.  
+   - Export is **near real time**; the app reads NDJSON lines as they arrive in the Azure container.  
+
+8. Generate some traffic to your site. After a few seconds you should see the logs appear in the Azure portal.
+
+![Azure Traffic Logs](images/azure-traffic-logs.png)
+
+---
+
+### 3) Install the Application
+
+Clone the repo:
+```bash
+git clone https://github.com/benoitbMTL/fortiappsec-traffic-log-viewer.git
+cd fortiappsec-traffic-logs-viewer
+```
+
+---
+
+### 4) Set Azure Storage Credentials in .env
+
+Use `.env.example` as a template:  
 ```bash
 cp .env.example .env
 ```
 
-Fill the values (minimal set):
-```ini
+Fill the mandatory values:
+
+```bash
 # --- Azure Storage ---
 AZURE_STORAGE_ACCOUNT=your_storage_account_name
-AZURE_STORAGE_KEY=your_access_key_or_sas     # if SAS, include the leading '?'
-AZURE_CONTAINER=traffic-log                  # your container name
-
-# --- App settings ---
-PORT=8000
-MAX_BLOBS=0          # 0 = fetch all blobs (use small number to test)
-OUTPUT_DIR=./out     # snapshots will be written here
+AZURE_STORAGE_KEY=your_access_key
+AZURE_CONTAINER=fortiappsec-traffic-logs
 ```
 
-> The app fetches logs **directly from Azure** using these values; **no local log mount** is needed.
+The app fetches logs **directly from Azure** using these values.
 
-### 5) Run the application
+---
 
-#### Option A — Local (with `run.sh`)
+### 5) Run the Application
+
+#### Option A — Local (`run.sh`)
+
 A helper script is included to create a venv, install deps, and start the app:
 
 ```bash
@@ -86,82 +180,47 @@ chmod +x run.sh
 ./run.sh
 ```
 
-Open: http://localhost:8000
+Open: [http://localhost:8000](http://localhost:8000)  
+
+If `.env` does not exist, the application will ask for Azure storage credentials.  
+
+![Config Prompt](images/config_prompt.png)  
 
 #### Option B — Docker
+
 **Build** the image:
 ```bash
-docker build -t fortiappsec-traffic-log:latest .
+docker build -t fortiappsec-traffic-logs:latest .
 ```
 
 **Run** the container (reads `.env` for Azure credentials):
 ```bash
 docker run -d --restart unless-stopped \
-  --name fortiappsec-traffic-log \
+  --name fortiappsec-traffic-logs \
   --env-file .env \
-  -p 6000:8000 \
-  fortiappsec-traffic-log:latest
+  -p 8000:8000 \
+  fortiappsec-traffic-logs:latest
 ```
 
-Open: http://localhost:6000
+Open: [http://localhost:8000](http://localhost:8000)  
 
-(Optional) Persist CSV/Parquet snapshots across restarts:
-```bash
-docker volume create fortiappsec_out
-docker run -d --restart unless-stopped \
-  --name fortiappsec-traffic-log \
-  --env-file .env \
-  -v fortiappsec_out:/app/out \
-  -p 6000:8000 \
-  fortiappsec-traffic-log:latest
-```
+If `.env` does not exist, the application will ask for Azure credentials. 
 
----
-
-## 🧱 Files of Interest
-- `app.py` – Flask backend that downloads NDJSON from Azure, merges in-memory, exposes `/data`, `/data.csv`, `/data.json`, `/reload`. fileciteturn2file0
-- `templates/index.html` – Bootstrap 5 layout; Tabulator & modal UI.
-- `static/js/app.js` – Column picker, default/all-columns views, dynamic layout (`fitColumns` vs `fitData`), exports.
-- `static/css/style.css` – Blue theme overrides, compact filters, pagination “select” visibility fix, alternating rows.
-- `run.sh` – Local runner (venv + pip install + start).
-- `requirements.txt` – Python deps (you can pin versions or allow latest).
-
----
-
-## 🔐 Security Notes
-- **Do not commit secrets**: `.env` is ignored by `.gitignore` (keep a public `.env.example` only).
-- Prefer **SAS** with tight scope/expiry over full account keys; rotate credentials regularly.
-- Restrict storage access with firewall/private endpoints when possible.
-
----
-
-## 🛠 Troubleshooting
-- **Empty table** but `/data?debug=1` shows rows:
-  - Likely the Tabulator CDN is blocked. CSV/JSON endpoints still work.
-- **No logs appear**:
-  - Check `.env` values; verify FortiAppSec export is enabled & writing into the container.
-- **Horizontal scroll**:
-  - Default view uses `fitColumns` (no H-scroll); “All Columns View” uses `fitData` (H-scroll for wide sets).
+![Config Prompt](images/config_prompt.png)  
 
 ---
 
 ## 📦 Requirements (Python)
-- flask
-- azure-storage-blob
-- pandas
-- pyarrow (optional but recommended for Parquet)
-- python-dotenv
-- gunicorn
+- flask  
+- azure-storage-blob  
+- pandas  
+- pyarrow  
+- python-dotenv  
+- gunicorn  
+
+`run.sh` installs all dependencies automatically.  
 
 ---
 
 ## 📚 References
-- Azure Blob Storage (docs): https://learn.microsoft.com/azure/storage/blobs/storage-blobs-overview
-- Azure Blob Python SDK: https://learn.microsoft.com/azure/storage/blobs/storage-quickstart-blobs-python
-- Tabulator docs: http://tabulator.info/docs/6.3
-- Bootstrap 5: https://getbootstrap.com/docs/5.3/getting-started/introduction/
-
----
-
-## 📝 License
-MIT
+- [Fortinet Documentation — FortiAppSec Log Settings](https://docs.fortinet.com/document/fortiappsec-cloud/latest/user-guide/681595/log-settings)

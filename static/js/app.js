@@ -714,11 +714,12 @@ function dbg(...args) { try { console.debug("[CONFIG]", ...args); } catch { } }
 function dgw(...args) { try { console.warn("[CONFIG]", ...args); } catch { } }
 function dge(...args) { try { console.error("[CONFIG]", ...args); } catch { } }
 
-// Populate timezone <select> using browser's IANA list if available
+// Populate timezone <select> OR <datalist> (auto-detect)
 function populateTimezoneSelect() {
-  const sel = document.getElementById("cfgTimezone");
-  if (!sel) { dgw("populateTimezoneSelect() no select"); return; }
-  sel.innerHTML = "";
+  const el = document.getElementById("cfgTimezone");
+  if (!el) { dgw("populateTimezoneSelect() no element"); return; }
+
+  // Build the list of timezones
   let tzList = [];
   if (typeof Intl !== "undefined" && Intl.supportedValuesOf) {
     try { tzList = Intl.supportedValuesOf("timeZone"); } catch { }
@@ -727,16 +728,43 @@ function populateTimezoneSelect() {
     tzList = ["UTC", "America/Toronto", "America/New_York", "Europe/Paris", "Europe/London", "Asia/Tokyo", "Australia/Sydney"];
     dgw("Intl.supportedValuesOf not available; using short fallback list");
   }
-  tzList.forEach(tz => {
-    const opt = document.createElement("option");
-    opt.value = tz; opt.textContent = tz;
-    sel.appendChild(opt);
-  });
+
+  // If it’s a <select>, fill <option>; if it’s an <input list>, fill <datalist>
+  if (el.tagName === "SELECT") {
+    el.innerHTML = "";
+    tzList.forEach(tz => {
+      const opt = document.createElement("option");
+      opt.value = tz;
+      opt.textContent = tz;
+      el.appendChild(opt);
+    });
+  } else {
+    // input[list]: find the datalist
+    const dl = document.getElementById(el.getAttribute("list"));
+    if (!dl) { dgw("populateTimezoneSelect(): datalist not found"); return; }
+    dl.innerHTML = "";
+    tzList.forEach(tz => {
+      const opt = document.createElement("option");
+      opt.value = tz;       // text is optional for datalist
+      dl.appendChild(opt);
+    });
+
+    // Optional: validate the value on blur and warn if not an exact match
+    el.addEventListener("blur", () => {
+      const val = el.value.trim();
+      if (!val) return;
+      if (!tzList.includes(val)) {
+        showAlert("warning", `Unknown timezone "${val}". Please pick a value from the list.`);
+      }
+    });
+  }
+
   dbg("populateTimezoneSelect done:", tzList.length, "items");
 }
 
+
 // sentinel used to show dots but avoid overwriting unless user changes it
-const KEY_SENTINEL = "********";
+const KEY_SENTINEL = "***************************************************************************";
 
 // Apply config values to modal inputs
 function fillModalFromConfig(cfg) {
@@ -805,40 +833,193 @@ async function getConfig() {
   }
 }
 
+/* ============================================================
+   CONFIG: save + reload + refresh (all logs in English)
+   ============================================================ */
+
+/* Run the backend reload, manage the navbar button state, and log verbosely */
+async function doBackendReload() {
+  const btn = document.getElementById("reloadBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "Reloading…"; }
+  dlog("[Config] Calling POST /reload");
+
+  try {
+    const res = await fetch("/reload", { method: "POST" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+    const json = await res.json();
+    dlog("[Config] Reload OK:", json);
+    return true;
+  } catch (e) {
+    derror("[Config] Reload failed:", e);
+    showAlert("danger", "Reload failed. See console for details.");
+    return false;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Reload from Azure"; }
+  }
+}
+
+/* Fetch /data and push it into the table (or build the table on first run) */
+async function refreshUiAfterReload() {
+  dlog("[Config] Refreshing UI after reload: fetching /data");
+  const payload = await fetchData();
+
+  // Backend surfaced a friendly error (e.g., Azure connectivity)
+  if (payload?.error) {
+    showError(payload.error);
+    return false;
+  }
+
+  // Normalize & validate payload
+  const records = Array.isArray(payload?.records) ? payload.records : [];
+  const columns = Array.isArray(payload?.columns) ? payload.columns.slice() : [];
+  const total = Number.isFinite(payload?.total) ? payload.total : records.length;
+
+  // Hide error banner if records exist
+  const banner = document.getElementById("errorBanner");
+  if (banner && records.length > 0) banner.classList.add("d-none");
+
+  // Header counters
+  const countEl = document.getElementById("count");
+  const lastEl = document.getElementById("last");
+  if (countEl) countEl.innerText = total;
+  if (lastEl) lastEl.innerText = payload?.last_load_human || payload?.last_load_utc || "-";
+
+  // Ensure Tabulator library is here before touching the table
+  const tabOk = await waitForTabulator(5000);
+  if (!tabOk) {
+    derror("[Config] Tabulator not available after reload");
+    showError("Unable to build the table UI (Tabulator). Check CDN/network.");
+    return false;
+  }
+
+  // Destroy any existing instance to avoid header/DOM inconsistencies
+  try {
+    if (window.table && typeof table.destroy === "function") {
+      dlog("[Config] Destroying existing Tabulator before rebuild");
+      table.destroy(true);
+      window.table = null;
+    }
+  } catch (e) {
+    dwarn("[Config] table.destroy failed (continuing with rebuild):", e);
+  }
+
+  // Prepare columns + prefs
+  allColumnKeys = columns;
+  const ordered = orderColumns(allColumnKeys);
+  const stored = loadColPrefs();
+  const usePrefs =
+    Object.keys(stored).length > 0
+      ? stored
+      : (() => {
+          const m = {};
+          allColumnKeys.forEach((k) => (m[k] = DEFAULT_VISIBLE.has(k)));
+          return m;
+        })();
+
+  // Build fresh table
+  try {
+    table = new Tabulator("#table", {
+      data: records,
+      columns: makeColumns(ordered, usePrefs),
+      layout: "fitData",
+      height: "100%",
+      resizableColumns: true,
+      movableColumns: true,
+      selectable: true,
+      pagination: true,
+      paginationSize: 15,
+      paginationSizeSelector: [15, 25, 50, 100, 250, 300],
+      initialSort: [
+        {
+          column: allColumnKeys.includes("log_timestamp")
+            ? "log_timestamp"
+            : "_blob_last_modified",
+          dir: "desc",
+        },
+      ],
+      theme: "bootstrap5",
+    });
+    window.table = table;
+
+    // Update Columns dropdown to reflect current headers
+    rebuildColumnsList("afterReload(rebuild)");
+
+    // Layout & final redraw
+    toggleHScroll(true);
+    safeRedraw("afterReload(rebuild)");
+    setTimeout(() => debugWidths("afterReload(rebuild)", table), 0);
+
+    // If still no data, show a friendly banner (keeps UX consistent)
+    if (records.length === 0) {
+      showError("No data records available to display.");
+    }
+
+    dlog("[Config] Rebuild OK after reload, rows:", records.length);
+    return true;
+  } catch (e) {
+    derror("[Config] Rebuild failed after reload:", e);
+    showError("Failed to rebuild table after reload. See console.");
+    return false;
+  }
+}
+
+/* Save config, show success alert, reload backend, refresh table, close modal */
 async function saveConfig() {
   const body = readModalToPayload();
+  const btn = document.getElementById("btnCfgSave");
   try {
+    // Optimistic UI on the Save button
+    if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+
     const res = await fetch("/config", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const saved = await res.json();
     dbg("saveConfig OK:", saved);
     APP_CONFIG = saved;
 
-
-
-    // After saving, update the timestamp column title with the new TZ
+    // Keep timestamp column title in sync with chosen timezone
     try {
       const tz = APP_CONFIG?.timezone || "UTC";
       const tsCol = table?.getColumn("log_timestamp");
-      if (tsCol) {
-        tsCol.updateDefinition({ title: `log_timestamp (${tz})` });
-      }
+      if (tsCol) tsCol.updateDefinition({ title: `log_timestamp (${tz})` });
       table?.redraw(true);
       dlog("[Config] Updated timestamp column title to", tz);
     } catch (e) {
       dwarn("Could not update timestamp column title after save:", e);
     }
 
+    // 1) Success toast inside the modal
+    showAlert("success", "Configuration saved. Reloading data…");
 
+    // 2) Ask backend to reload cache
+    const reloaded = await doBackendReload();
+    if (!reloaded) return; // doBackendReload already surfaced an alert
 
+    // 3) Pull fresh data into UI (full rebuild path)
+    const ok = await refreshUiAfterReload();
+    if (!ok) return;
 
-    if (window.table) safeRedraw("saveConfig"); // timezone affects rendering
+    // Ensure modal reflects the just-saved config (prevents empty fields feeling)
+    fillModalFromConfig(APP_CONFIG);
+
+    // 4) Close the modal safely after successful save+reload
+    closeConfigModalSafely();
+    dlog("[Config] Modal closed after successful save+reload");
+
+    // Final redraw for good measure
+    safeRedraw("saveConfig OK");
   } catch (e) {
     dge("saveConfig failed:", e);
+    showAlert("danger", "Save failed. See console for details.");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Save"; }
   }
 }
+
 
 async function resetConfigToDefault() {
   try {
@@ -886,10 +1067,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const state = await fetchConfigState();
     if (state.needs_config) {
       dbg("No config detected → auto-open Config modal");
-      const modalEl = document.getElementById("configModal");
-      const modal = new bootstrap.Modal(modalEl);
+      const modal = getConfigModal();
+      modal?.show();
       fillModalFromConfig(state.config || APP_CONFIG);
-      modal.show();
     } else {
       fillModalFromConfig(state.config || APP_CONFIG);
     }
@@ -980,10 +1160,9 @@ async function bootstrapApp() {
     const state = await fetchConfigState(); // met APP_CONFIG = state.config si présent
     if (state.needs_config) {
       dlog("No active config → auto-open modal");
-      const modalEl = document.getElementById("configModal");
-      const modal = new bootstrap.Modal(modalEl);
+      const modal = getConfigModal();
+      modal?.show();
       fillModalFromConfig(state.config || APP_CONFIG);
-      modal.show();
     } else {
       fillModalFromConfig(state.config || APP_CONFIG);
     }
@@ -995,6 +1174,33 @@ async function bootstrapApp() {
     showError("Failed to initialize app. See console for details.");
   }
 }
+
+/* ---------------------------
+   Modal helpers (safe open/close)
+   --------------------------- */
+function getConfigModal() {
+  const el = document.getElementById("configModal");
+  return el ? bootstrap.Modal.getOrCreateInstance(el) : null;
+}
+
+function closeConfigModalSafely() {
+  const el = document.getElementById("configModal");
+  if (!el) return;
+
+  // Hide the existing instance (do NOT create a new one here)
+  const inst = bootstrap.Modal.getInstance(el) || bootstrap.Modal.getOrCreateInstance(el);
+  try { inst.hide(); } catch (_) { }
+
+  // Safety cleanup in case a ghost backdrop/body class remains
+  // (can happen if multiple instances were created elsewhere)
+  setTimeout(() => {
+    document.querySelectorAll(".modal-backdrop").forEach(b => b.remove());
+    document.body.classList.remove("modal-open");
+    document.body.style.removeProperty("overflow");
+    document.body.style.removeProperty("paddingRight");
+  }, 50);
+}
+
 
 bootstrapApp();
 

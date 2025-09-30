@@ -1,5 +1,6 @@
 # ==== Environment & local configs ====
 .env
+.env2
 .env.*
 .venv/
 venv/
